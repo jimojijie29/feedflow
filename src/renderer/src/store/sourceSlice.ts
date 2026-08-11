@@ -32,6 +32,19 @@ export interface SourceSlice {
   loadItems: () => Promise<void>
   loadMoreItems: () => Promise<void>
 
+  // Read/unread
+  unreadCount: number
+  loadUnreadCount: () => Promise<void>
+  markItemAsRead: (itemId: string) => Promise<void>
+  markAllAsRead: () => Promise<void>
+
+  // Search
+  searchQuery: string
+  searchResults: DisplayItem[]
+  isSearching: boolean
+  search: (query: string) => Promise<void>
+  clearSearch: () => void
+
   // Refresh
   isRefreshing: boolean
   refreshProgress: RefreshProgress[]
@@ -53,6 +66,10 @@ export const createSourceSlice: StateCreator<SourceSlice, [], [], SourceSlice> =
   timelineLoading: false,
   isRefreshing: false,
   refreshProgress: [],
+  unreadCount: 0,
+  searchQuery: '',
+  searchResults: [],
+  isSearching: false,
 
   selectSource: (sourceId: string | null) => {
     set({
@@ -142,6 +159,58 @@ export const createSourceSlice: StateCreator<SourceSlice, [], [], SourceSlice> =
       nextCursor: result.nextCursor,
       timelineLoading: false
     })
+    // 刷新未读计数
+    get().loadUnreadCount()
+  },
+
+  loadUnreadCount: async () => {
+    const { selectedSourceId } = get()
+    const sourceIds = selectedSourceId ? [selectedSourceId] : undefined
+    const result = (await window.api.getUnreadCount(sourceIds)) as { count: number }
+    set({ unreadCount: result.count })
+  },
+
+  markItemAsRead: async (itemId: string) => {
+    // 乐观更新：先改本地状态，再调用后端
+    set((state) => ({
+      items: state.items.map((item) =>
+        item.id === itemId ? { ...item, read: true } : item
+      ),
+      unreadCount: Math.max(0, state.unreadCount - 1)
+    }))
+    await window.api.markItemAsRead(itemId)
+  },
+
+  markAllAsRead: async () => {
+    const { selectedSourceId } = get()
+    const sourceIds = selectedSourceId ? [selectedSourceId] : undefined
+    // 乐观更新
+    set((state) => ({
+      items: state.items.map((item) => ({ ...item, read: true })),
+      unreadCount: 0
+    }))
+    await window.api.markAllAsRead(sourceIds)
+  },
+
+  search: async (query: string) => {
+    const trimmed = query.trim()
+    if (!trimmed) {
+      set({ searchQuery: '', searchResults: [], isSearching: false })
+      return
+    }
+    set({ searchQuery: trimmed, isSearching: true })
+    try {
+      const { selectedSourceId } = get()
+      const sourceIds = selectedSourceId ? [selectedSourceId] : undefined
+      const result = (await window.api.searchItems(trimmed, sourceIds)) as { items: DisplayItem[] }
+      set({ searchResults: result.items, isSearching: false })
+    } catch {
+      set({ searchResults: [], isSearching: false })
+    }
+  },
+
+  clearSearch: () => {
+    set({ searchQuery: '', searchResults: [], isSearching: false })
   },
 
   loadMoreItems: async () => {

@@ -19,7 +19,7 @@ export function listItems(params: TimelineListParams = {}): { items: Item[]; has
                author_name as authorName, author_avatar as authorAvatar,
                content_text as contentText, content_html as contentHtml,
                media_urls as mediaUrls, permalink, published_at as publishedAt,
-               fetched_at as fetchedAt, cursor_value as cursorValue, metadata
+               fetched_at as fetchedAt, cursor_value as cursorValue, metadata, read
         FROM items
         WHERE published_at < ? AND source_id IN (${placeholders})
         ORDER BY published_at DESC
@@ -32,7 +32,7 @@ export function listItems(params: TimelineListParams = {}): { items: Item[]; has
                author_name as authorName, author_avatar as authorAvatar,
                content_text as contentText, content_html as contentHtml,
                media_urls as mediaUrls, permalink, published_at as publishedAt,
-               fetched_at as fetchedAt, cursor_value as cursorValue, metadata
+               fetched_at as fetchedAt, cursor_value as cursorValue, metadata, read
         FROM items
         WHERE source_id IN (${placeholders})
         ORDER BY published_at DESC
@@ -48,7 +48,7 @@ export function listItems(params: TimelineListParams = {}): { items: Item[]; has
                author_name as authorName, author_avatar as authorAvatar,
                content_text as contentText, content_html as contentHtml,
                media_urls as mediaUrls, permalink, published_at as publishedAt,
-               fetched_at as fetchedAt, cursor_value as cursorValue, metadata
+               fetched_at as fetchedAt, cursor_value as cursorValue, metadata, read
         FROM items
         WHERE published_at < ?
           AND source_id NOT IN (SELECT id FROM sources WHERE feed_type = 'group-chat')
@@ -62,7 +62,7 @@ export function listItems(params: TimelineListParams = {}): { items: Item[]; has
                author_name as authorName, author_avatar as authorAvatar,
                content_text as contentText, content_html as contentHtml,
                media_urls as mediaUrls, permalink, published_at as publishedAt,
-               fetched_at as fetchedAt, cursor_value as cursorValue, metadata
+               fetched_at as fetchedAt, cursor_value as cursorValue, metadata, read
         FROM items
         WHERE source_id NOT IN (SELECT id FROM sources WHERE feed_type = 'group-chat')
         ORDER BY published_at DESC
@@ -150,9 +150,80 @@ export function getItemsByExternalIds(sourceId: string, externalIds: string[]): 
            author_name as authorName, author_avatar as authorAvatar,
            content_text as contentText, content_html as contentHtml,
            media_urls as mediaUrls, permalink, published_at as publishedAt,
-           fetched_at as fetchedAt, cursor_value as cursorValue, metadata
+           fetched_at as fetchedAt, cursor_value as cursorValue, metadata, read
     FROM items
     WHERE source_id = ? AND external_id IN (${placeholders})
     ORDER BY published_at DESC
   `).all(sourceId, ...externalIds) as Item[]
+}
+
+/** Search items by keyword in content_text */
+export function searchItems(query: string, sourceIds?: string[]): Item[] {
+  const trimmed = query.trim()
+  if (!trimmed) return []
+
+  const db = getDb()
+  const conditions: string[] = ['content_text LIKE ?']
+  const params: unknown[] = [`%${trimmed}%`]
+
+  if (sourceIds && sourceIds.length > 0) {
+    const placeholders = sourceIds.map(() => '?').join(',')
+    conditions.push(`source_id IN (${placeholders})`)
+    params.push(...sourceIds)
+  } else {
+    conditions.push(`source_id NOT IN (SELECT id FROM sources WHERE feed_type = 'group-chat')`)
+  }
+
+  const whereClause = `WHERE ${conditions.join(' AND ')}`
+
+  return db.prepare(`
+    SELECT id, source_id as sourceId, plugin_id as pluginId, external_id as externalId,
+           author_name as authorName, author_avatar as authorAvatar,
+           content_text as contentText, content_html as contentHtml,
+           media_urls as mediaUrls, permalink, published_at as publishedAt,
+           fetched_at as fetchedAt, cursor_value as cursorValue, metadata, read
+    FROM items
+    ${whereClause}
+    ORDER BY published_at DESC
+    LIMIT 50
+  `).all(...params) as Item[]
+}
+
+/** Mark a single item as read */
+export function markItemAsRead(itemId: string): void {
+  const db = getDb()
+  db.prepare('UPDATE items SET read = 1 WHERE id = ?').run(itemId)
+}
+
+/** Mark all items (or items from specific sources) as read */
+export function markAllAsRead(sourceIds?: string[]): void {
+  const db = getDb()
+  if (sourceIds && sourceIds.length > 0) {
+    const placeholders = sourceIds.map(() => '?').join(',')
+    db.prepare(`UPDATE items SET read = 1 WHERE source_id IN (${placeholders})`).run(...sourceIds)
+  } else {
+    // Only mark timeline items as read (exclude group-chat which are viewed separately)
+    db.prepare(`
+      UPDATE items SET read = 1
+      WHERE source_id NOT IN (SELECT id FROM sources WHERE feed_type = 'group-chat')
+    `).run()
+  }
+}
+
+/** Get count of unread items (optionally filtered by source) */
+export function getUnreadCount(sourceIds?: string[]): number {
+  const db = getDb()
+  let query = 'SELECT COUNT(*) as count FROM items WHERE read = 0'
+  const params: unknown[] = []
+
+  if (sourceIds && sourceIds.length > 0) {
+    const placeholders = sourceIds.map(() => '?').join(',')
+    query += ` AND source_id IN (${placeholders})`
+    params.push(...sourceIds)
+  } else {
+    query += ` AND source_id NOT IN (SELECT id FROM sources WHERE feed_type = 'group-chat')`
+  }
+
+  const row = db.prepare(query).get(...params) as { count: number }
+  return row.count
 }

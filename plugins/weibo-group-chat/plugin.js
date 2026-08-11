@@ -19,6 +19,7 @@ const {
   ApiError
 } = require('./group-api')
 const { verifyCookie } = require('./auth')
+const https = require('https')
 
 // 微博聊天的 appkey，用于 msget 接口的 source 参数。
 // 注意：source 必须是 appkey，不能是用户 UID，否则接口返回 400 "auth failed!"。
@@ -96,8 +97,8 @@ function mapMessageToItem(message, group) {
 
   const rawText = message.content || ''
 
-  // 提取图片 URL：从消息各字段中提取
-  const mediaUrls = extractImageUrls(message, rawText)
+  // 提取图片和视频 URL：从消息各字段中提取
+  const mediaUrls = extractMediaUrls(message, rawText)
 
   // 发送者主页 URL
   let profileUrl = ''
@@ -136,24 +137,66 @@ function mapMessageToItem(message, group) {
 // ============================================================
 
 /**
- * 从消息中提取图片 URL
- * 1. 从消息内容中提取图片直链（.jpg/.png 等）
- * 2. 从特定图片字段（pic_url、media_url 等）提取图片 URL
- * 不扫描用户信息字段，不提取非图片 URL
+ * 调试：fetch 视频 URL，打印响应 Content-Type 和前 500 字节内容
  */
-function extractImageUrls(message, rawText) {
-  // 纯文本消息（media_type === 0）不提取图片，保持 mediaUrls 为空
+function debugFetchVideo(url) {
+  console.log('[weibo-group-chat] debugFetchVideo called for URL:', url.slice(0, 100))
+  try {
+    const parsedUrl = new URL(url)
+    const req = https.get(
+      {
+        hostname: parsedUrl.hostname,
+        path: parsedUrl.pathname + parsedUrl.search,
+        headers: {
+          'Referer': 'https://api.weibo.com/',
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
+        },
+        timeout: 10000
+      },
+      (res) => {
+        const ct = res.headers['content-type'] || 'unknown'
+        const cl = res.headers['content-length'] || 'unknown'
+        let body = ''
+        res.on('data', (chunk) => { body += chunk.toString('binary'); if (body.length > 1000) res.destroy() })
+        res.on('end', () => {
+          console.log(`[weibo-group-chat] video fetch result: content-type=${ct}, content-length=${cl}, body-preview=${JSON.stringify(body.slice(0, 300))}`)
+        })
+      }
+    )
+    req.on('error', (e) => console.error('[weibo-group-chat] video fetch error:', e.message))
+  } catch (e) {
+    console.error('[weibo-group-chat] debugFetchVideo error:', e.message)
+  }
+}
+
+/**
+ * 从消息中提取图片和视频 URL
+ * 1. 从消息内容中提取图片/视频直链
+ * 2. 从特定字段（pic_url、media_url、video_url 等）提取 URL
+ * 不扫描用户信息字段
+ */
+function extractMediaUrls(message, rawText) {
+  // 纯文本消息（media_type === 0）不提取媒体，保持 mediaUrls 为空
   if (message.media_type === 0) return []
 
   const urls = []
   const imageRegex = /https?:\/\/[^\s"'<>\\]+\.(jpg|jpeg|png|gif|webp|bmp|svg)(\?[^\s"'<>]*)?/gi
+  const videoRegex = /https?:\/\/[^\s"'<>\\]+\.(mp4|mov|webm|m4v|avi)(\?[^\s"'<>]*)?/gi
 
-  // 从内容中提取图片直链
-  const contentMatches = (rawText || '').match(imageRegex)
-  if (contentMatches) urls.push(...contentMatches)
+  // 从内容中提取图片和视频直链
+  const contentImageMatches = (rawText || '').match(imageRegex)
+  if (contentImageMatches) urls.push(...contentImageMatches)
+  const contentVideoMatches = (rawText || '').match(videoRegex)
+  if (contentVideoMatches) urls.push(...contentVideoMatches)
 
-  // 从特定图片字段提取（pic_url、media_url、pic_ids、pic_info 等）
-  const IMAGE_FIELDS = ['pic_url', 'pic_urls', 'media_url', 'media_urls', 'image_url', 'image_urls', 'photo_url', 'photo_urls', 'thumbnail_url', 'original_url', 'large_url', 'middle_url', 'small_url', 'pic_info', 'pic_infos']
+  // 从特定字段提取（图片字段 + 视频字段）
+  const MEDIA_FIELDS = [
+    'pic_url', 'pic_urls', 'media_url', 'media_urls',
+    'image_url', 'image_urls', 'photo_url', 'photo_urls',
+    'thumbnail_url', 'original_url', 'large_url', 'middle_url', 'small_url',
+    'pic_info', 'pic_infos',
+    'video_url', 'video_urls', 'play_url', 'play_urls', 'stream_url'
+  ]
 
   // pic_ids 是图片 ID 数组，需要拼接为完整 URL
   if (message.pic_ids && Array.isArray(message.pic_ids)) {
@@ -164,23 +207,33 @@ function extractImageUrls(message, rawText) {
     }
   }
 
-  // fids 是图片 ID 数组，通过微博 msget 接口获取图片
+  // fids 是媒体 ID 数组，通过微博 msget 接口获取
   // 注意：msget 接口的 source 参数必须是微博聊天的 appkey，
   // 而不是用户 UID。使用 UID 会导致接口返回 400 "auth failed!"。
   if (message.fids) {
     const fids = Array.isArray(message.fids) ? message.fids : [message.fids]
     const ts = Date.now()
+    const isVideo = message.media_type === 10
     for (const fid of fids) {
       if (fid !== null && fid !== undefined) {
         const fidStr = String(fid)
         if (fidStr) {
           const params = new URLSearchParams({
             fid: fidStr,
-            imageType: 'origin',
             ts: String(ts),
             source: WEIBO_CHAT_APPKEY
           })
-          urls.push(`https://upload.api.weibo.com/2/mss/msget?${params.toString()}`)
+          // 图片用 imageType=origin；视频不带 imageType，尝试直接获取视频流
+          if (!isVideo) {
+            params.set('imageType', 'origin')
+          }
+          const url = `https://upload.api.weibo.com/2/mss/msget?${params.toString()}`
+          urls.push(url)
+          console.log(`[weibo-group-chat] ${isVideo ? 'video' : 'image'} fid URL:`, url)
+          // 调试：fetch 视频 URL，打印响应内容类型和前 500 字节
+          if (isVideo) {
+            debugFetchVideo(url)
+          }
         }
       }
     }
@@ -199,22 +252,56 @@ function extractImageUrls(message, rawText) {
     }
   }
 
-  for (const field of IMAGE_FIELDS) {
+  // video_info 是视频信息对象，包含播放地址
+  if (message.video_info && typeof message.video_info === 'object') {
+    const vi = message.video_info
+    // 尝试从各种可能的字段中提取视频 URL
+    const videoUrl = vi.url || vi.play_url || vi.stream_url || vi.video_url || vi.download_url
+    if (videoUrl && typeof videoUrl === 'string' && videoUrl.startsWith('http')) {
+      urls.push(videoUrl)
+    }
+    // variants 数组（类似 X 的视频变体）
+    if (vi.variants && Array.isArray(vi.variants)) {
+      for (const v of vi.variants) {
+        if (v && v.url && typeof v.url === 'string') {
+          urls.push(v.url)
+        }
+      }
+    }
+  }
+
+  for (const field of MEDIA_FIELDS) {
     if (message[field]) {
       const val = message[field]
       if (typeof val === 'string') {
-        const m = val.match(imageRegex)
-        if (m) urls.push(...m)
+        const imgM = val.match(imageRegex)
+        if (imgM) urls.push(...imgM)
+        const vidM = val.match(videoRegex)
+        if (vidM) urls.push(...vidM)
+        // 如果字段值本身是一个 URL 但不匹配图片/视频正则（如带路径的视频 URL），也加入
+        if (val.startsWith('http') && !imgM && !vidM) {
+          urls.push(val)
+        }
       } else if (Array.isArray(val)) {
         for (const item of val) {
           if (typeof item === 'string') {
-            const m = item.match(imageRegex)
-            if (m) urls.push(...m)
+            const imgM = item.match(imageRegex)
+            if (imgM) urls.push(...imgM)
+            const vidM = item.match(videoRegex)
+            if (vidM) urls.push(...vidM)
+            if (item.startsWith('http') && !imgM && !vidM) {
+              urls.push(item)
+            }
           } else if (item && typeof item === 'object') {
             for (const subVal of Object.values(item)) {
               if (typeof subVal === 'string') {
-                const m = subVal.match(imageRegex)
-                if (m) urls.push(...m)
+                const imgM = subVal.match(imageRegex)
+                if (imgM) urls.push(...imgM)
+                const vidM = subVal.match(videoRegex)
+                if (vidM) urls.push(...vidM)
+                if (subVal.startsWith('http') && !imgM && !vidM) {
+                  urls.push(subVal)
+                }
               }
             }
           }
@@ -226,21 +313,49 @@ function extractImageUrls(message, rawText) {
   // 过滤掉头像 URL
   const filtered = urls.filter(u => !/avatar|profile/i.test(u))
 
-  // 去重：同一图片 fid 只保留一个版本
-  const imageMap = new Map()
-  for (const url of filtered) {
-    const fidMatch = url.match(/[?&]fid=([^&]+)/)
-    const idMatch = url.match(/\/([^/]+)\.(jpg|jpeg|png|gif|webp)/i)
-    const imageId = fidMatch ? fidMatch[1] : (idMatch ? idMatch[1] : url)
-    const sizeMatch = url.match(/\/crop\.\d+\.\d+\.\d+\.\d+\.(\d+)\//)
-    const size = sizeMatch ? parseInt(sizeMatch[1], 10) : 0
-
-    if (!imageMap.has(imageId) || size > imageMap.get(imageId).size) {
-      imageMap.set(imageId, { url, size })
-    }
+  // 全面扫描：遍历消息所有字段，查找遗漏的视频/图片 URL
+  // （处理字段名未知或嵌套结构的情况）
+  const SKIP_FIELDS = new Set(['from_user', 'id', 'time', 'type', 'media_type', 'appid', 'gid', 'content', 'text'])
+  for (const [key, val] of Object.entries(message)) {
+    if (SKIP_FIELDS.has(key)) continue
+    scanForUrls(val, urls, imageRegex, videoRegex)
   }
 
-  return [...imageMap.values()].map(v => v.url)
+  // 去重
+  return [...new Set(filtered)]
+}
+
+/** 递归扫描值，提取其中的图片/视频 URL */
+function scanForUrls(val, urls, imageRegex, videoRegex) {
+  if (!val) return
+  if (typeof val === 'string') {
+    if (val.startsWith('http')) {
+      urls.push(val)
+    } else {
+      const imgM = val.match(imageRegex)
+      if (imgM) urls.push(...imgM)
+      const vidM = val.match(videoRegex)
+      if (vidM) urls.push(...vidM)
+    }
+  } else if (Array.isArray(val)) {
+    for (const item of val) {
+      scanForUrls(item, urls, imageRegex, videoRegex)
+    }
+  } else if (typeof val === 'object') {
+    // 优先提取常见的 URL 字段
+    const urlFields = ['url', 'play_url', 'stream_url', 'download_url', 'video_url', 'image_url', 'original_url', 'large_url', 'middle_url', 'thumbnail_url']
+    for (const f of urlFields) {
+      if (val[f] && typeof val[f] === 'string' && val[f].startsWith('http')) {
+        urls.push(val[f])
+      }
+    }
+    // 递归扫描其他字段
+    for (const [k, v] of Object.entries(val)) {
+      if (!urlFields.includes(k)) {
+        scanForUrls(v, urls, imageRegex, videoRegex)
+      }
+    }
+  }
 }
 
 // ============================================================
@@ -293,6 +408,7 @@ async function getGroupInfo(cookie, groupId) {
  * @returns {Promise<FetchResult>}
  */
 async function fetchItems(config, cursor) {
+  console.log('[weibo-group-chat] fetchItems called, group_id:', config.group_id, 'cursor:', cursor ? 'yes' : 'no')
   const cookie = config.cookie
   if (!cookie) {
     throw new Error('微博 Cookie 未配置。请在源设置中选择或创建微博凭据。')
@@ -331,6 +447,23 @@ async function fetchItems(config, cursor) {
   try {
     const response = await fetchGroupMessages(cookie, params)
     const allMessages = response.messages || []
+    console.log('[weibo-group-chat] fetched', allMessages.length, 'messages from API')
+
+    // 调试：打印消息类型分布
+    const typeStats = {}
+    for (const m of allMessages) {
+      const key = `type=${m.type},media_type=${m.media_type}`
+      typeStats[key] = (typeStats[key] || 0) + 1
+    }
+    console.log('[weibo-group-chat] message stats:', JSON.stringify(typeStats))
+
+    // 调试：如果检测到可能的视频消息（media_type > 1 或 include_video=1），打印完整结构
+    for (const m of allMessages) {
+      const includeVideo = m.annotations?.include_video
+      if ((m.media_type && m.media_type > 1) || includeVideo === 1) {
+        console.log('[weibo-group-chat] VIDEO message found:', JSON.stringify(m).slice(0, 3000))
+      }
+    }
 
     // 仅保留文本消息 (type === 321)，过滤系统通知等
     const messages = allMessages.filter(m => m.type === 321)

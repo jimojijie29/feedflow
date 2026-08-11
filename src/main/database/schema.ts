@@ -172,4 +172,14 @@ export function initializeDatabase(): void {
   } catch (err) {
     console.error('[Schema] credentials sync columns migration failed:', err)
   }
+
+  // Migration: add read column to items table for read/unread tracking
+  try {
+    const itemCols = db.prepare("PRAGMA table_info(items)").all() as { name: string }[]
+    if (!itemCols.some((c) => c.name === 'read')) {
+      db.exec(`ALTER TABLE items ADD COLUMN read INTEGER NOT NULL DEFAULT 0`)
+    }
+  } catch (err) {
+    console.error('[Schema] items read column migration failed:', err)
+  }
 }

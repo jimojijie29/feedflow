@@ -14,6 +14,7 @@ export interface Item {
   fetchedAt: string
   cursorValue: string
   metadata: string
+  read: boolean
 }
 
 /** Parameters for listing timeline items */
@@ -41,6 +42,7 @@ export interface DisplayItem {
   publishedAt: string
   fetchedAt: string
   metadata: string
+  read: boolean
 }
 
 /** Fetch log entry */

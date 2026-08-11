@@ -33,7 +33,7 @@ export function CookieSyncBanner({ status, onRefresh }: CookieSyncBannerProps): 
           </div>
         </div>
         <div className={styles.actions}>
-          <Button variant="primary" size="sm" onClick={() => window.open('https://chrome.google.com/webstore')}>
+          <Button variant="primary" size="sm" onClick={() => window.open('https://chromewebstore.google.com/detail/feedflow/akacicfiihjhcjeifgibmhkobcaehiii')}>
             安装扩展
           </Button>
         </div>

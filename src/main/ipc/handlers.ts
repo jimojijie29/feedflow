@@ -50,6 +50,7 @@ function enrichItems(items: Item[]): DisplayItem[] {
       publishedAt: item.publishedAt,
       fetchedAt: item.fetchedAt,
       metadata: item.metadata,
+      read: item.read === 1 || item.read === true,
     }
   })
 }
@@ -263,6 +264,26 @@ export function registerIpcHandlers(): void {
       console.error('[IPC] getItemDetail: plugin threw:', err instanceof Error ? err.message : String(err))
       throw err
     }
+  })
+
+  // ---- Read/unread tracking ----
+  ipcMain.handle('timeline:mark-as-read', (_e, { itemId }: { itemId: string }) => {
+    itemQueries.markItemAsRead(itemId)
+  })
+
+  ipcMain.handle('timeline:mark-all-as-read', (_e, { sourceIds }: { sourceIds?: string[] }) => {
+    itemQueries.markAllAsRead(sourceIds)
+    return { unreadCount: itemQueries.getUnreadCount(sourceIds) }
+  })
+
+  ipcMain.handle('timeline:get-unread-count', (_e, { sourceIds }: { sourceIds?: string[] }) => {
+    return { count: itemQueries.getUnreadCount(sourceIds) }
+  })
+
+  // ---- Search ----
+  ipcMain.handle('timeline:search', (_e, { query, sourceIds }: { query: string; sourceIds?: string[] }) => {
+    const raw = itemQueries.searchItems(query, sourceIds)
+    return { items: enrichItems(raw) }
   })
 
   // ---- Settings ----

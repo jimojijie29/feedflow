@@ -18,7 +18,9 @@ export function TimelineView(): JSX.Element {
   const {
     items, timelineLoading, hasMore, hasOlderItems, loadItems, loadMoreItems,
     sources, plugins, selectedSourceId, selectSource,
-    isRefreshing, refreshAll, refreshSource
+    isRefreshing, refreshAll, refreshSource,
+    markItemAsRead, markAllAsRead, unreadCount,
+    searchQuery, searchResults, isSearching, search, clearSearch
   } = useStore()
 
   // 当前选中的信息源（null 表示聚合流）
@@ -39,6 +41,7 @@ export function TimelineView(): JSX.Element {
   const initialLoaded = useRef(false)
   const timelineRef = useRef<HTMLDivElement>(null)
   const scrollContainerRef = useRef<HTMLElement | null>(null)
+  const searchTimeoutRef = useRef<number | null>(null)
 
   // 下拉刷新状态
   const [pullState, setPullState] = useState<'idle' | 'pulling' | 'ready' | 'refreshing'>('idle')
@@ -189,6 +192,52 @@ export function TimelineView(): JSX.Element {
     observer.observe(el)
     return () => observer.disconnect()
   }, [handleIntersect])
+
+  // 滚动自动标记已读：当 item 进入视口时自动标记为已读
+  const readObserverRef = useRef<IntersectionObserver | null>(null)
+  const markedReadRef = useRef<Set<string>>(new Set())
+
+  useEffect(() => {
+    const container = scrollContainerRef.current
+    if (!container) return
+
+    // 清理之前的观察器
+    if (readObserverRef.current) {
+      readObserverRef.current.disconnect()
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            const itemId = entry.target.getAttribute('data-item-id') || entry.target.getAttribute('data-chat-item-id')
+            if (itemId && !markedReadRef.current.has(itemId)) {
+              markedReadRef.current.add(itemId)
+              // 检查是否未读，避免不必要的 IPC 调用
+              const item = items.find((i) => i.id === itemId)
+              if (item && !item.read) {
+                markItemAsRead(itemId)
+              }
+            }
+          }
+        })
+      },
+      { root: container, threshold: 0.5 }
+    )
+
+    readObserverRef.current = observer
+
+    // 观察所有 item 元素
+    const itemElements = timelineRef.current?.querySelectorAll('[data-item-id], [data-chat-item-id]')
+    itemElements?.forEach((el) => observer.observe(el))
+
+    return () => observer.disconnect()
+  }, [items, markItemAsRead])
+
+  // 切换信息源时重置已标记集合
+  useEffect(() => {
+    markedReadRef.current = new Set()
+  }, [selectedSourceId])
 
   // Electron 中顶部哨兵在程序化初始滚动后偶尔不会触发观察器。
   // 群聊模式直接监听真实滚动位置，确保用户滚到顶部时一定加载历史消息。
@@ -423,13 +472,24 @@ export function TimelineView(): JSX.Element {
             />
             <h2 className={styles.headerTitle}>{selectedSource?.name}</h2>
           </div>
-          <button
-            className={styles.clearBtn}
-            onClick={() => selectSource(null)}
-            title="返回聚合流"
-          >
-            返回聚合流
-          </button>
+          <div className={styles.headerRight}>
+            {unreadCount > 0 && (
+              <button
+                className={styles.clearBtn}
+                onClick={() => markAllAsRead()}
+                title="标记全部为已读"
+              >
+                全部标为已读
+              </button>
+            )}
+            <button
+              className={styles.clearBtn}
+              onClick={() => selectSource(null)}
+              title="返回聚合流"
+            >
+              返回聚合流
+            </button>
+          </div>
         </header>
 
         <RefreshErrorBanner />
@@ -509,16 +569,61 @@ export function TimelineView(): JSX.Element {
             </>
           )}
         </div>
-        {selectedSourceId && (
+        <div className={styles.headerRight}>
+          {unreadCount > 0 && (
+            <button
+              className={styles.clearBtn}
+              onClick={() => markAllAsRead()}
+              title="标记全部为已读"
+            >
+              全部标为已读
+            </button>
+          )}
+          {selectedSourceId && (
+            <button
+              className={styles.clearBtn}
+              onClick={() => selectSource(null)}
+              title="返回聚合流"
+            >
+              返回聚合流
+            </button>
+          )}
+        </div>
+      </header>
+
+      {/* 搜索框 */}
+      <div className={styles.searchContainer}>
+        <input
+          type="text"
+          className={styles.searchInput}
+          placeholder="搜索内容..."
+          value={searchQuery}
+          onChange={(e) => {
+            const value = e.target.value
+            // 防抖：300ms 后执行搜索
+            if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current)
+            if (!value) {
+              clearSearch()
+              return
+            }
+            searchTimeoutRef.current = window.setTimeout(() => {
+              search(value)
+            }, 300)
+          }}
+        />
+        {searchQuery && (
           <button
-            className={styles.clearBtn}
-            onClick={() => selectSource(null)}
-            title="返回聚合流"
+            className={styles.searchClearBtn}
+            onClick={() => {
+              if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current)
+              clearSearch()
+            }}
+            title="清除搜索"
           >
-            返回聚合流
+            ✕
           </button>
         )}
-      </header>
+      </div>
 
       <RefreshErrorBanner />
 
@@ -544,18 +649,42 @@ export function TimelineView(): JSX.Element {
         />
       )}
 
-      {items.map((item) => (
-        <TimelineItem key={item.id} item={item} />
-      ))}
-
-      {hasMore && (
-        <div ref={sentinelRef} className={styles.sentinel}>
-          {timelineLoading && <TimelineSkeleton count={2} />}
-        </div>
+      {/* 搜索模式 */}
+      {searchQuery && (
+        <>
+          {isSearching && (
+            <p className={styles.searchHint}>搜索中...</p>
+          )}
+          {!isSearching && searchResults.length === 0 && (
+            <EmptyState
+              icon="🔍"
+              title="未找到匹配内容"
+              description={`没有包含「${searchQuery}」的内容`}
+            />
+          )}
+          {searchResults.map((item) => (
+            <TimelineItem key={item.id} item={item} />
+          ))}
+        </>
       )}
 
-      {!hasMore && items.length > 0 && (
-        <p className={styles.end}>— 已经到底了 —</p>
+      {/* 正常信息流模式 */}
+      {!searchQuery && (
+        <>
+          {items.map((item) => (
+            <TimelineItem key={item.id} item={item} />
+          ))}
+
+          {hasMore && (
+            <div ref={sentinelRef} className={styles.sentinel}>
+              {timelineLoading && <TimelineSkeleton count={2} />}
+            </div>
+          )}
+
+          {!hasMore && items.length > 0 && (
+            <p className={styles.end}>— 已经到底了 —</p>
+          )}
+        </>
       )}
     </div>
   )

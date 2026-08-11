@@ -238,7 +238,7 @@ export function SourceConfigForm({ schema, onSubmit, submitting, pluginId, onDyn
               )}
               {extStatus.status === 'unknown' && (
                 <span className={styles.help} style={{ marginTop: 6, display: 'block' }}>
-                  💡 安装 <a href="#" onClick={(e) => { e.preventDefault(); window.open('https://chrome.google.com/webstore') }}>FeedFlow Chrome 扩展</a> 可自动同步 Cookie，无需手动粘贴。
+                  💡 安装 <a href="#" onClick={(e) => { e.preventDefault(); window.open('https://chromewebstore.google.com/detail/feedflow/akacicfiihjhcjeifgibmhkobcaehiii') }}>FeedFlow Chrome 扩展</a> 可自动同步 Cookie，无需手动粘贴。
                 </span>
               )}
 

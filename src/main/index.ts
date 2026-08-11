@@ -2,79 +2,19 @@ import { app, BrowserWindow, shell, session, ipcMain } from 'electron'
 import { join } from 'path'
 import { is } from '@electron-toolkit/utils'
 import { initializeDatabase } from './database/schema'
-import { closeDb, getDb } from './database/connection'
+import { closeDb } from './database/connection'
 import { registerIpcHandlers } from './ipc/handlers'
 import { loadPlugins } from './plugin-system/loader'
-import { decrypt } from './plugin-system/encryption'
 import { startMcpServer } from './mcp-server'
 import { startCookieSyncServer } from './cookie-sync/server'
 import { initAutoUpdater } from './auto-updater'
-
-/** 微博相关域名，用于设置 Cookie 和 Referer */
-const WEIBO_DOMAINS = ['.upload.api.weibo.com', '.weibo.com', '.sinaimg.cn', '.sina.com.cn', '.api.weibo.com']
-
-/** X (Twitter) 视频 CDN 域名，请求视频时需要携带 X Cookie 才能播放 */
-const X_VIDEO_DOMAINS = ['video.twimg.com']
-
-/**
- * 从 DB 中加载某个插件被任一启用源引用的凭据（解密后的 Cookie 字符串）。
- * 用于在主进程为图片/视频请求注入 Cookie。返回空字符串表示未找到凭据。
- */
-function loadCookieForPlugin(pluginId: string): string {
-  try {
-    const db = getDb()
-    const row = db.prepare(`
-      SELECT c.value FROM credentials c
-      JOIN sources s ON s.config LIKE '%' || c.id || '%'
-      WHERE s.plugin_id = ?
-      LIMIT 1
-    `).get(pluginId) as { value: string } | undefined
-    if (row) {
-      return decrypt(row.value)
-    }
-    console.log(`[main] No credential found for plugin ${pluginId}`)
-  } catch (e) {
-    console.error(`[main] Failed to load cookie for ${pluginId}:`, (e as Error).message)
-  }
-  return ''
-}
-
-/**
- * 将微博 Cookie 设置到 Electron session 中。
- * @param cookie - 完整的 Cookie 头（"name1=value1; name2=value2"）或单个 Cookie 值
- * @param cookieName - 当 cookie 是单个值时使用的名称（默认 'SUB'）
- */
-async function setWeiboCookies(cookie: string, cookieName = 'SUB'): Promise<void> {
-  const pairs: { name: string; value: string }[] = []
-  if (cookie.includes('=')) {
-    // 完整 Cookie 头，解析所有键值对
-    for (const pair of cookie.split(';')) {
-      const eqIdx = pair.indexOf('=')
-      if (eqIdx <= 0) continue
-      const name = pair.substring(0, eqIdx).trim()
-      const value = pair.substring(eqIdx + 1).trim()
-      if (name && value) pairs.push({ name, value })
-    }
-  } else {
-    // 单个 Cookie 值
-    pairs.push({ name: cookieName, value: cookie })
-  }
-
-  for (const { name, value } of pairs) {
-    for (const domain of WEIBO_DOMAINS) {
-      session.defaultSession.cookies.set({
-        url: `https://${domain.replace(/^\./, '')}`,
-        name,
-        value,
-        domain,
-        path: '/',
-        secure: true,
-        httpOnly: true,
-        sameSite: 'no_restriction'
-      }).catch(() => {})
-    }
-  }
-}
+import {
+  X_VIDEO_DOMAINS,
+  refreshMediaCookies,
+  getWeiboCookie,
+  getXCookie,
+  setWeiboCookies,
+} from './media-cookies'
 
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
@@ -128,39 +68,76 @@ app.whenReady().then(async () => {
   // Initialize database
   initializeDatabase()
 
-  // 为微博图片请求设置 Referer 和 Cookie，使图片能正常加载
-  const weiboCookie = loadCookieForPlugin('feedflow-plugin-weibo-group-chat')
-  if (weiboCookie) console.log('[main] Weibo cookie loaded, length:', weiboCookie.length)
-
-  // 为 X 视频请求加载 Cookie（video.twimg.com 需要登录态才能播放）
-  const xCookie = loadCookieForPlugin('feedflow-plugin-x')
-  if (xCookie) console.log('[main] X cookie loaded, length:', xCookie.length)
+  // 为微博图片/X视频请求加载 Cookie（启动时加载一次，后续可通过 refreshMediaCookies 刷新）
+  refreshMediaCookies()
 
   session.defaultSession.webRequest.onBeforeSendHeaders((details, callback) => {
     const url = details.url
-    if (url.includes('upload.api.weibo.com')) {
+    // 微博图片/视频域名：需要注入 Referer 和 Cookie
+    if (
+      url.includes('upload.api.weibo.com') ||
+      url.includes('weibocdn.com') ||
+      url.includes('video.weibo.com') ||
+      url.includes('v.weibo.com')
+    ) {
       details.requestHeaders['Referer'] = 'https://api.weibo.com/'
-      if (weiboCookie) {
-        details.requestHeaders['Cookie'] = weiboCookie
+      let cookie = getWeiboCookie()
+      if (!cookie) {
+        // Cookie 为空时尝试重新加载一次（处理启动时无 Cookie、后续同步的情况）
+        refreshMediaCookies()
+        cookie = getWeiboCookie()
+      }
+      if (cookie) {
+        details.requestHeaders['Cookie'] = cookie
       } else {
-        console.log('[main] WARNING: weiboCookie is empty for image request')
+        console.log('[main] WARNING: weiboCookie is empty for media request:', url.slice(0, 80))
       }
     } else if (url.includes('sinaimg.cn') || url.includes('sina.com.cn') || url.includes('weibo.com')) {
       details.requestHeaders['Referer'] = 'https://weibo.com/'
     } else if (X_VIDEO_DOMAINS.some((d) => url.includes(d))) {
       // X 视频 CDN 校验 Referer 和 Cookie，否则返回 403/404 导致视频黑屏
       details.requestHeaders['Referer'] = 'https://x.com/'
-      if (xCookie) {
-        details.requestHeaders['Cookie'] = xCookie
+      let cookie = getXCookie()
+      if (!cookie) {
+        refreshMediaCookies()
+        cookie = getXCookie()
+      }
+      if (cookie) {
+        details.requestHeaders['Cookie'] = cookie
       }
     }
     callback({ requestHeaders: details.requestHeaders })
   })
 
-  // 同时设置 Cookie（双保险）
-  if (weiboCookie) {
-    setWeiboCookies(weiboCookie)
-  }
+  // 调试：打印 msget 接口响应的完整头信息
+  session.defaultSession.webRequest.onCompleted((details) => {
+    if (details.url.includes('upload.api.weibo.com/2/mss/msget')) {
+      const ct = details.responseHeaders?.['content-type'] || details.responseHeaders?.['Content-Type'] || 'unknown'
+      const acceptRanges = details.responseHeaders?.['accept-ranges'] || details.responseHeaders?.['Accept-Ranges'] || 'none'
+      const contentLength = details.responseHeaders?.['content-length'] || details.responseHeaders?.['Content-Length'] || 'unknown'
+      console.log('[main] msget response:', ct, '| accept-ranges:', acceptRanges, '| content-length:', contentLength, '| status:', details.statusCode)
+    }
+  })
+
+  // 修正微博 msget 接口返回的视频 Content-Type：
+  // 接口返回 video/mpeg4，但 <video> 标签需要 video/mp4 才能正常播放
+  // 同时添加 Accept-Ranges 头，支持视频缓冲和拖动进度条
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    if (details.url.includes('upload.api.weibo.com/2/mss/msget')) {
+      const headers = { ...details.responseHeaders }
+      const ct = headers['content-type'] || headers['Content-Type']
+      if (ct && ct.toString().includes('video')) {
+        headers['content-type'] = ['video/mp4']
+        headers['accept-ranges'] = ['bytes']
+        delete headers['Content-Type']
+        delete headers['Accept-Ranges']
+        console.log('[main] Fixed video headers: content-type=video/mp4, accept-ranges=bytes')
+      }
+      callback({ responseHeaders: headers })
+    } else {
+      callback({ responseHeaders: details.responseHeaders })
+    }
+  })
 
   // Load plugins
   await loadPlugins()
@@ -179,6 +156,8 @@ app.whenReady().then(async () => {
     if (!cookie) return
     try {
       await setWeiboCookies(cookie, 'SUB')
+      // 重新从 DB 加载最新 Cookie 到内存，确保图片请求携带最新值
+      refreshMediaCookies()
       return { success: true }
     } catch (e: any) {
       return { success: false, error: e.message }

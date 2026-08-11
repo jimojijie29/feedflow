@@ -22,16 +22,19 @@ async function init() {
 }
 
 async function checkConnection() {
+  const promo = $('promoBanner')
   try {
     const res = await fetch(`${SERVER_URL}/health`)
     if (res.ok) {
       $('connDot').classList.add('online')
       $('connText').textContent = '已连接'
+      if (promo) promo.classList.add('hidden')
       return true
     }
   } catch { /* ignore */ }
   $('connDot').classList.remove('online')
   $('connText').textContent = '未连接'
+  if (promo) promo.classList.remove('hidden')
   return false
 }
 
@@ -52,7 +55,7 @@ async function loadData() {
 function render() {
   const list = $('providerList')
   if (!providers.length) {
-    list.innerHTML = '<div class="empty">未检测到 FeedFlow 桌面端<br/>请先打开 FeedFlow</div>'
+    list.innerHTML = '<div class="empty">未检测到 FeedFlow 桌面端<br/>请先打开或下载桌面 App</div>'
     return
   }
   list.innerHTML = ''

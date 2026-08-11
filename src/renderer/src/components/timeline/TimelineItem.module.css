@@ -319,3 +319,9 @@
 .chatMedia:hover {
   opacity: 0.9;
 }
+
+/* 未读标记：左侧蓝色边框高亮 */
+.unread {
+  border-left: 3px solid var(--color-accent, #3b82f6);
+  padding-left: calc(var(--spacing-md) - 2px);
+}

@@ -39,7 +39,7 @@ export function TimelineItem({ item }: TimelineItemProps): JSX.Element {
   // 判断是否为群聊模式（群聊类型的消息用气泡式展示）
   const isChat = item.feedType === 'group-chat'
 
-  // 解析 metadata（包含 isTruncated 等插件侧标记）
+  // 解析 metadata（包含 isTruncated、media_type 等插件侧标记）
   let metadata: Record<string, unknown> = {}
   try {
     metadata = item.metadata ? JSON.parse(item.metadata) : {}
@@ -47,7 +47,10 @@ export function TimelineItem({ item }: TimelineItemProps): JSX.Element {
     metadata = {}
   }
   const isTruncated = !!metadata.isTruncated
-  console.log('[TimelineItem] render', item.id, '| isTruncated=', isTruncated, '| contentTextLen=', (item.contentText || '').length, '| hasPermalink=', !!item.permalink)
+  const mediaType = metadata.media_type as number | undefined
+  // 微博群聊：media_type=1 为图片，media_type=10 为视频
+  const isVideoMessage = mediaType === 10
+  console.log('[TimelineItem] render', item.id, '| isTruncated=', isTruncated, '| media_type=', mediaType, '| contentTextLen=', (item.contentText || '').length, '| hasPermalink=', !!item.permalink)
 
   // 内容容器 ref + 真实溢出检测：CSS 用 -webkit-line-clamp: 6 折叠长文，
   // 但字符数 > 300 才显示展开按钮会漏掉「行数超 6 行但字符数不足 300」的情况
@@ -121,19 +124,27 @@ export function TimelineItem({ item }: TimelineItemProps): JSX.Element {
     return () => window.removeEventListener('resize', measure)
   }, [contentCollapsed])
 
-  // 检测视频 URL（微博视频通常是 .mp4 或 .mov 格式）
-  const videoUrl = mediaUrls.find(
-    (url) => url.endsWith('.mp4') || url.endsWith('.mov') || url.includes('video') || url.includes('.mp4?')
-  )
-  // 图片 URL（排除视频）
-  const imageUrls = mediaUrls.filter(
-    (url) => !url.endsWith('.mp4') && !url.endsWith('.mov') && !url.includes('video')
-  )
+  // 图片 URL：以图片扩展名结尾，或是微博 msget 图片接口
+  const IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg']
+  const isImageUrl = (url: string): boolean => {
+    const lower = url.toLowerCase().split('?')[0]
+    if (IMAGE_EXTENSIONS.some((ext) => lower.endsWith(ext))) return true
+    if (url.includes('upload.api.weibo.com/2/mss/msget')) return true
+    if (url.includes('sinaimg.cn')) return true
+    return false
+  }
+  // 视频消息（media_type=10）：所有 mediaUrls 都是视频
+  // 普通消息：非图片的媒体 URL 视为视频
+  const videoUrl = isVideoMessage
+    ? mediaUrls[0]
+    : mediaUrls.find((url) => !isImageUrl(url))
+  // 图片 URL
+  const imageUrls = isVideoMessage ? [] : mediaUrls.filter((url) => isImageUrl(url))
 
   if (isChat) {
     const chatHtml = buildChatHtml(item.contentText || '')
     return (
-      <article className={styles.chatItem} data-chat-item-id={item.id}>
+      <article className={`${styles.chatItem} ${item.read ? '' : styles.unread}`} data-chat-item-id={item.id}>
         <div className={styles.chatHeader}>
           {item.authorAvatar ? (
             <img className={styles.chatAvatar} src={item.authorAvatar} alt="" />
@@ -149,19 +160,23 @@ export function TimelineItem({ item }: TimelineItemProps): JSX.Element {
         </div>
 
         <div className={styles.chatBody}>
+          {/* 群聊内容默认展示全部，不折叠 */}
           <div
-            ref={setContentRef}
-            className={`${styles.chatContent} ${contentCollapsed ? styles.chatContentCollapsed : ''}`}
+            className={styles.chatContent}
             dangerouslySetInnerHTML={{ __html: chatHtml }}
           />
 
-          {needsExpand && (
-            <button
-              className={styles.chatExpandButton}
-              onClick={() => setExpanded((prev) => !prev)}
-            >
-              {expanded ? '收起' : '展开'}
-            </button>
+          {/* 视频播放 */}
+          {videoUrl && (
+            <div className={styles.videoContainer}>
+              <video
+                className={styles.video}
+                src={videoUrl}
+                controls
+                preload="metadata"
+                playsInline
+              />
+            </div>
           )}
 
           {imageUrls.length > 0 && (
@@ -190,7 +205,7 @@ export function TimelineItem({ item }: TimelineItemProps): JSX.Element {
 
   // ---- 普通模式：卡片式展示 ----
   return (
-    <article className={styles.card}>
+    <article className={`${styles.card} ${item.read ? '' : styles.unread}`} data-item-id={item.id}>
       <div className={styles.header}>
         <div className={styles.author}>
           {item.authorAvatar ? (

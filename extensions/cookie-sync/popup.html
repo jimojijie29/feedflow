@@ -92,6 +92,32 @@
     .btn.primary:hover:not(:disabled) { background: #1d4ed8; }
 
     .empty { padding: 20px 12px; text-align: center; color: #9ca3af; font-size: 11px; }
+
+    .promo {
+      margin: 8px 6px 6px;
+      padding: 10px;
+      background: linear-gradient(135deg, #eff6ff 0%, #f5f3ff 100%);
+      border: 1px solid #bfdbfe;
+      border-radius: 8px;
+    }
+    .promo .ptitle { font-size: 12px; font-weight: 600; color: #1e3a8a; margin-bottom: 3px; }
+    .promo .pdesc { font-size: 11px; color: #475569; line-height: 1.5; margin-bottom: 8px; }
+    .promo .pbtn {
+      display: block;
+      width: 100%;
+      text-align: center;
+      padding: 6px 10px;
+      background: #2563eb;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      text-decoration: none;
+    }
+    .promo .pbtn:hover { background: #1d4ed8; }
+    .promo.hidden { display: none; }
   </style>
 </head>
 <body>
@@ -112,6 +138,12 @@
 
   <div class="list" id="providerList">
     <div class="empty">加载中…</div>
+  </div>
+
+  <div class="promo hidden" id="promoBanner">
+    <div class="ptitle">还没有 FeedFlow 桌面端？</div>
+    <div class="pdesc">在一个清爽的时间线里集中浏览微博、X、V2EX 等所有信息源。本扩展需要配合桌面 App 使用。</div>
+    <a class="pbtn" href="https://github.com/joyme123/feedflow/releases" target="_blank" rel="noopener">下载桌面 App</a>
   </div>
 
   <script src="popup.js"></script>

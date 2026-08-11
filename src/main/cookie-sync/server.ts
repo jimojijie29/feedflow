@@ -4,6 +4,7 @@ import * as credentialQueries from '../database/queries/credentials'
 import { getAll, getModule } from '../plugin-system/registry'
 import { buildProviderMaps, matchProvider, type ProviderInfo } from './domain-map'
 import { markExtensionHeartbeat, setServerRunning, getExtensionStatus } from './status'
+import { refreshMediaCookies } from '../media-cookies'
 import type { CredentialSource, SyncStatus } from '@shared/types/credential'
 
 const DEFAULT_PORT = 33940
@@ -121,7 +122,6 @@ async function handleSync(req: IncomingMessage, res: ServerResponse): Promise<vo
         lastSyncError: null,
       })
       console.log(`[CookieSync] Credential updated for ${provider}`)
-      sendJson(res, 200, { success: true, provider, action: 'updated', verified, message: 'Cookie 已更新' })
     } else {
       const info = getProviderInfo(provider)
       credentialQueries.addCredential({
@@ -133,8 +133,13 @@ async function handleSync(req: IncomingMessage, res: ServerResponse): Promise<vo
         lastSyncStatus: 'success',
         lastSyncError: null,
       })
-      sendJson(res, 200, { success: true, provider, action: 'created', verified, message: 'Cookie 已保存' })
+      console.log(`[CookieSync] Credential created for ${provider}`)
     }
+
+    // Cookie 已保存到 DB，刷新内存中的 Cookie 缓存，使图片/视频请求立即生效
+    refreshMediaCookies()
+
+    sendJson(res, 200, { success: true, provider, action: existing ? 'updated' : 'created', verified, message: 'Cookie 已保存' })
   } catch (err) {
     console.error('[CookieSync] /sync error:', err)
     sendJson(res, 500, { success: false, error: err instanceof Error ? err.message : String(err) })

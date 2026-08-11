@@ -41,7 +41,7 @@ export function Sidebar(): JSX.Element {
         <Button variant="ghost" size="sm" className={styles.settingsBtn} onClick={() => setSettingsOpen(true)}>
           ⚙️ 设置
         </Button>
-        <span className={styles.version}>FeedFlow v0.1.0</span>
+        <span className={styles.version}>FeedFlow v{__APP_VERSION__}</span>
       </footer>
 
       <AddSourceDialog open={addDialogOpen} onClose={() => setAddDialogOpen(false)} />

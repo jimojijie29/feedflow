@@ -42,6 +42,14 @@ const api = {
     ipcRenderer.invoke('timeline:load-older', { sourceId, maxId }),
   getItemDetail: (itemId: string) =>
     ipcRenderer.invoke('timeline:get-item-detail', { itemId }),
+  markItemAsRead: (itemId: string) =>
+    ipcRenderer.invoke('timeline:mark-as-read', { itemId }),
+  markAllAsRead: (sourceIds?: string[]) =>
+    ipcRenderer.invoke('timeline:mark-all-as-read', { sourceIds }),
+  getUnreadCount: (sourceIds?: string[]) =>
+    ipcRenderer.invoke('timeline:get-unread-count', { sourceIds }),
+  searchItems: (query: string, sourceIds?: string[]) =>
+    ipcRenderer.invoke('timeline:search', { query, sourceIds }),
 
   // Auto-updates
   checkForUpdates: () => ipcRenderer.invoke('updates:check'),
