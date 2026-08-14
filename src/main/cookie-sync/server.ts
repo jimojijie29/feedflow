@@ -3,8 +3,10 @@ import { getSetting } from '../database/queries/settings'
 import * as credentialQueries from '../database/queries/credentials'
 import { getAll, getModule } from '../plugin-system/registry'
 import { buildProviderMaps, matchProvider, type ProviderInfo } from './domain-map'
-import { markExtensionHeartbeat, setServerRunning, getExtensionStatus } from './status'
+import { markExtensionHeartbeat, setServerRunning, getExtensionStatus, loadExtensionStatus } from './status'
 import { refreshMediaCookies } from '../media-cookies'
+import { clearProviderStale, getStaleProviders } from './stale'
+import { refreshSourcesForProvider } from '../plugin-system/runner'
 import type { CredentialSource, SyncStatus } from '@shared/types/credential'
 
 const DEFAULT_PORT = 33940
@@ -139,6 +141,19 @@ async function handleSync(req: IncomingMessage, res: ServerResponse): Promise<vo
     // Cookie 已保存到 DB，刷新内存中的 Cookie 缓存，使图片/视频请求立即生效
     refreshMediaCookies()
 
+    // 同步成功：清除失效标记；若该 provider 之前正处于"Cookie 失效"状态，
+    // 说明这是一次自愈，立即自动重新拉取该 provider 的信息流。
+    const healed = clearProviderStale(provider)
+    if (healed) {
+      console.log(`[CookieSync] Provider ${provider} healed by sync, auto-refreshing its sources`)
+      refreshSourcesForProvider(provider).catch((e) =>
+        console.error(`[CookieSync] Auto-refresh after heal failed: ${e instanceof Error ? e.message : String(e)}`)
+      )
+    }
+
+    // 能成功同步 Cookie 说明扩展处于活跃状态，更新 lastSeen
+    markExtensionHeartbeat()
+
     sendJson(res, 200, { success: true, provider, action: existing ? 'updated' : 'created', verified, message: 'Cookie 已保存' })
   } catch (err) {
     console.error('[CookieSync] /sync error:', err)
@@ -176,9 +191,12 @@ function handleSyncStatus(_req: IncomingMessage, res: ServerResponse): void {
   sendJson(res, 200, { providers } satisfies SyncStatusResponse)
 }
 
-function handleHeartbeat(_req: IncomingMessage, res: ServerResponse): void {
+async function handleHeartbeat(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  // 消费请求体，避免 keep-alive 连接下未读数据影响后续请求
+  await readBody(req).catch(() => {})
   markExtensionHeartbeat()
-  sendJson(res, 200, { success: true })
+  // 把处于"Cookie 失效"状态的 provider 告诉扩展，扩展会立即重同步（并主动刷新）
+  sendJson(res, 200, { success: true, refreshProviders: getStaleProviders() })
 }
 
 function handleHealth(_req: IncomingMessage, res: ServerResponse): void {
@@ -188,6 +206,9 @@ function handleHealth(_req: IncomingMessage, res: ServerResponse): void {
 /** Start the cookie-sync HTTP server. Failure does not crash the app. */
 export function startCookieSyncServer(): void {
   try {
+    // 加载持久化的扩展最后活跃时间，避免 App 重启后状态丢失
+    loadExtensionStatus()
+
     const enabled = getSetting('cookie-sync.enabled')
     if (enabled === 'false') {
       console.log('[CookieSync] Server disabled in settings, skipping start')
@@ -220,7 +241,7 @@ export function startCookieSyncServer(): void {
         } else if (url === '/sync-status' && req.method === 'GET') {
           handleSyncStatus(req, res)
         } else if (url === '/heartbeat' && req.method === 'POST') {
-          handleHeartbeat(req, res)
+          await handleHeartbeat(req, res)
         } else {
           sendJson(res, 404, { error: 'Not Found' })
         }

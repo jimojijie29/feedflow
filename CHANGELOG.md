@@ -12,6 +12,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- 支持用户上传 zip 压缩包安装插件：解压后自动校验 `package.json` 的 `feedflow` 字段与 `fetchItems` 实现，安装到 `{userData}/plugins/` 并即时注册生效
+- 插件列表区分「内置」与「用户安装」来源，用户安装的插件支持一键删除（同时清理目录、DB 记录及关联的信息源/条目）
+
+### Changed
+- Chrome 扩展 Cookie 同步升级：新增定期强制重同步（每 10 分钟）与失败自愈闭环——桌面端检测到 Cookie 失效时标记 provider，扩展在 1 分钟心跳内自动重同步浏览器最新 Cookie，必要时后台打开隐藏标签页触发站点轮换 cookie，验证通过后自动重新拉取对应信息流，全程无需手动操作
+- Chrome 扩展版本 1.1.0 → 1.2.0
+
+### Fixed
+- 刷新失败提示按当前浏览的信息源过滤：单源视图只显示该源的错误，不再在 v2ex 等源下弹出微博等其它源的 Cookie 检查报错
+- 修复已安装 Chrome 扩展但凭据页仍显示"安装扩展"提示的问题：Cookie 同步成功时即标记扩展活跃，并将 `extensionLastSeen` 持久化到 settings，App 重启后不再丢失状态
+
 ## [0.2.0] - 2026-08-09
 
 ### Added
