@@ -112,6 +112,14 @@ interface FetchResult {
   `target="_blank"` and `rel="noopener noreferrer"` on every `<a>` tag in
   `content.html`. See `references/cookbook.md` for the `processHtmlLinks`
   helper.
+- **No artificial expansion logic (MANDATORY)**: do NOT implement
+  `fetchItemDetail` / `isTruncated` / "查看更多" behavior unless the source
+  genuinely requires an *additional* API call to retrieve the full content of
+  an item (e.g. 微博/X 长文被列表接口截断，需要单独调详情接口). If `fetchItems`
+  already returns the complete text, just put it in `content.text`/`content.html`
+  and skip `fetchItemDetail` entirely. Never truncate content yourself just to
+  create an expand affordance, and never add a no-op `fetchItemDetail` "for
+  completeness".
 
 ## Common mistakes to avoid
 
@@ -135,6 +143,12 @@ interface FetchResult {
   main process has a `will-navigate` guard as a safety net, but plugins must
   still set the attribute explicitly. Use the `processHtmlLinks` helper in
   `references/cookbook.md`.
+- **Adding unnecessary `fetchItemDetail`** — only implement `fetchItemDetail`
+  (and the `isTruncated` flag) when the list API truncates content and a
+  separate detail API call is needed to get the full text. If `fetchItems`
+  already has the complete content, do NOT add `fetchItemDetail`, do NOT set
+  `isTruncated`, and do NOT artificially shorten the text to create a
+  "查看更多" affordance.
 
 ## Files in this skill
 

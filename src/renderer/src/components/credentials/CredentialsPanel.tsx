@@ -56,21 +56,33 @@ export function CredentialsPanel(): JSX.Element {
   }, [loadCredentials, loadPlugins])
 
   // Distinct providers across all plugins, preserving first-seen order.
+  // Only include providers that have at least one plugin with a credential
+  // field (cookie or token). Plugins that need no auth (e.g. GitHub Trending,
+  // Hacker News) are excluded.
   const providers = useMemo(() => {
     const seen = new Set<string>()
-    const list: { id: string; label: string }[] = []
+    const list: { id: string; label: string; credentialType: 'cookie' | 'token' }[] = []
     for (const p of plugins) {
       const id = p.provider
       if (seen.has(id)) continue
+      if (!p.hasCredential) continue
       seen.add(id)
       // Use the provider's display name (not the plugin name).
-      list.push({ id, label: p.providerName ?? id })
+      list.push({
+        id,
+        label: p.providerName ?? id,
+        credentialType: p.credentialType ?? 'cookie'
+      })
     }
     return list
   }, [plugins])
 
   const providerLabel = (provider: string): string =>
     providers.find((p) => p.id === provider)?.label ?? provider
+
+  /** Get the credential type ('cookie' or 'token') for the currently selected provider */
+  const selectedCredType = (): 'cookie' | 'token' =>
+    providers.find((p) => p.id === form.provider)?.credentialType ?? 'cookie'
 
   const timeAgo = (ts: number): string => {
     const diff = Date.now() - ts
@@ -113,12 +125,12 @@ export function CredentialsPanel(): JSX.Element {
       return
     }
     if (!form.value.trim()) {
-      setVerifyError('请先填写 Cookie')
+      setVerifyError(selectedCredType() === 'token' ? '请先填写凭据' : '请先填写 Cookie')
       return
     }
     const pluginId = pluginIdForProvider(form.provider)
     if (!pluginId) {
-      setVerifyError('没有可用的插件来验证此 Cookie')
+      setVerifyError('没有可用的插件来验证此凭据')
       return
     }
     setVerifying(true)
@@ -129,7 +141,7 @@ export function CredentialsPanel(): JSX.Element {
       if (result.valid) {
         setVerifySuccess({ uid: result.uid, screenName: result.screenName })
       } else {
-        setVerifyError(result.error || 'Cookie 验证失败')
+        setVerifyError(result.error || (selectedCredType() === 'token' ? '凭据验证失败' : 'Cookie 验证失败'))
       }
     } catch (err) {
       setVerifyError(err instanceof Error ? err.message : String(err))
@@ -144,7 +156,7 @@ export function CredentialsPanel(): JSX.Element {
       return
     }
     if (!form.value.trim()) {
-      setVerifyError('请填写 Cookie')
+      setVerifyError(selectedCredType() === 'token' ? '请填写凭据' : '请填写 Cookie')
       return
     }
     const provider = form.provider
@@ -240,10 +252,10 @@ export function CredentialsPanel(): JSX.Element {
             )}
           </div>
           <div className={styles.field}>
-            <label className={styles.label}>Cookie</label>
+            <label className={styles.label}>{selectedCredType() === 'token' ? '凭据' : 'Cookie'}</label>
             <textarea
               className={styles.textarea}
-              placeholder="粘贴 Cookie"
+              placeholder={selectedCredType() === 'token' ? '粘贴 Token / 密钥' : '粘贴 Cookie'}
               value={form.value}
               rows={3}
               onChange={(e) => setForm((f) => ({ ...f, value: e.target.value }))}
@@ -251,7 +263,7 @@ export function CredentialsPanel(): JSX.Element {
           </div>
           <div className={styles.formActions}>
             <Button type="button" variant="ghost" size="sm" onClick={handleVerify} disabled={verifying || !canVerify}>
-              {verifying ? '验证中...' : verifySuccess ? '✓ 已验证，重新验证' : '🔑 验证 Cookie'}
+              {verifying ? '验证中...' : verifySuccess ? '✓ 已验证，重新验证' : `🔑 验证${selectedCredType() === 'token' ? '凭据' : ' Cookie'}`}
             </Button>
             <Button type="button" variant="primary" size="sm" onClick={handleSave} disabled={saving}>
               {saving ? '保存中...' : '保存'}
@@ -263,7 +275,7 @@ export function CredentialsPanel(): JSX.Element {
           {verifyError && <span className={styles.error}>{verifyError}</span>}
           {verifySuccess && (
             <span className={styles.success}>
-              Cookie 有效{verifySuccess.screenName ? `，用户: ${verifySuccess.screenName}` : ''}
+              {selectedCredType() === 'token' ? '凭据' : 'Cookie'} 有效{verifySuccess.screenName ? `，用户: ${verifySuccess.screenName}` : ''}
               {verifySuccess.uid ? ` (UID: ${verifySuccess.uid})` : ''}
             </span>
           )}

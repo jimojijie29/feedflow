@@ -1,0 +1,17 @@
+{
+  "name": "feedflow-plugin-product-hunt",
+  "version": "1.0.0",
+  "description": "获取 Product Hunt 每日新产品发布（默认公开 Feed 无需认证；填写 Token 可获取更详细内容）",
+  "main": "plugin.js",
+  "feedflow": {
+    "id": "feedflow-plugin-product-hunt",
+    "name": "Product Hunt",
+    "version": "1.0.0",
+    "description": "获取 Product Hunt 每日新产品发布（默认公开 Feed 无需认证；填写 Token 可获取更详细内容）",
+    "author": "FeedFlow",
+    "color": "#DA552F",
+    "icon": "🚀",
+    "provider": "producthunt",
+    "providerName": "Product Hunt"
+  }
+}

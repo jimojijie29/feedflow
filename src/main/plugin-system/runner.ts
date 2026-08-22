@@ -5,7 +5,19 @@ import { getEnabledSources, updateSource } from '../database/queries/sources'
 import { upsertItem } from '../database/queries/items'
 import { insertLog } from '../database/queries/fetch_log'
 import { acquireRefreshLock, releaseRefreshLock } from './refresh-lock'
-import type { SourceConfig } from '@shared/types/plugin'
+import { clearProviderStale, markProviderStale } from '../cookie-sync/stale'
+import type { FeedFlowPlugin, SourceConfig } from '@shared/types/plugin'
+
+/** 解析插件所属的 provider（凭据共享维度），用于失效标记 */
+function providerOf(plugin: FeedFlowPlugin): string {
+  return plugin.meta.provider ?? plugin.meta.id
+}
+
+/** 判断是否为 Cookie 失效类错误（各插件 ApiError 的 code 约定 + 文案兜底） */
+function isCookieFailure(err: unknown, message: string): boolean {
+  const code = (err as { code?: number } | null)?.code
+  return code === -100 || code === 401 || code === 403 || message.includes('Cookie 已过期')
+}
 
 export async function refreshSources(sourceIds?: string[]): Promise<number> {
   const sources = getEnabledSources()
@@ -67,6 +79,9 @@ export async function refreshSources(sourceIds?: string[]): Promise<number> {
       // Update cursor
       updateSource(source.id, { cursorValue: result.nextCursor })
 
+      // 拉取成功：清除该 provider 的 Cookie 失效标记
+      clearProviderStale(providerOf(plugin))
+
       // Log success
       insertLog({
         sourceId: source.id,
@@ -86,6 +101,12 @@ export async function refreshSources(sourceIds?: string[]): Promise<number> {
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err)
       console.error(`[Runner] Error refreshing source ${source.id}:`, errorMessage)
+
+      // Cookie 失效类错误 → 标记 provider 为 stale，
+      // cookie-sync 扩展会在下次心跳时自动重同步并触发自愈
+      if (isCookieFailure(err, errorMessage)) {
+        markProviderStale(providerOf(plugin))
+      }
 
       // Log error
       insertLog({
@@ -119,4 +140,20 @@ export async function refreshSources(sourceIds?: string[]): Promise<number> {
   } finally {
     releaseRefreshLock(lockedIds)
   }
+}
+
+/**
+ * 刷新指定 provider（凭据共享维度）下所有启用来源。
+ * 用于 Cookie 自愈后自动重新拉取该 provider 的信息流。
+ */
+export async function refreshSourcesForProvider(provider: string): Promise<number> {
+  const sources = getEnabledSources()
+  const ids = sources
+    .filter((s) => {
+      const p = get(s.pluginId)
+      return p && providerOf(p) === provider
+    })
+    .map((s) => s.id)
+  if (ids.length === 0) return 0
+  return refreshSources(ids)
 }

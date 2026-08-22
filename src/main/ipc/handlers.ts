@@ -1,4 +1,4 @@
-import { ipcMain, BrowserWindow } from 'electron'
+import { ipcMain, BrowserWindow, dialog } from 'electron'
 import * as sourceQueries from '../database/queries/sources'
 import * as itemQueries from '../database/queries/items'
 import * as credentialQueries from '../database/queries/credentials'
@@ -9,6 +9,7 @@ import { resolveCredentialFields } from '../plugin-system/credentials'
 import { upsertItem } from '../database/queries/items'
 import { updateSource, getEnabledSources } from '../database/queries/sources'
 import { getExtensionStatus } from '../cookie-sync/server'
+import { installPluginFromZip, uninstallPlugin } from '../plugin-system/installer'
 import type { AddSourceInput } from '@shared/types/source'
 import type { TimelineListParams, DisplayItem, Item } from '@shared/types/item'
 import type { SourceConfig } from '@shared/types/plugin'
@@ -110,6 +111,25 @@ export function registerIpcHandlers(): void {
     }
     const listGroups = mod.listGroups as (cookie: string) => Promise<{ label: string; value: string }[]>
     return await listGroups(cred.value)
+  })
+
+  // ---- Plugin install / uninstall ----
+  ipcMain.handle('plugins:install', async () => {
+    const win = BrowserWindow.getAllWindows()[0]
+    const result = await dialog.showOpenDialog(win ?? undefined, {
+      title: '选择插件压缩包',
+      filters: [{ name: 'Zip 压缩包', extensions: ['zip'] }],
+      properties: ['openFile']
+    })
+    if (result.canceled || result.filePaths.length === 0) {
+      throw new Error('用户取消了选择')
+    }
+    const zipPath = result.filePaths[0]
+    return await installPluginFromZip(zipPath)
+  })
+
+  ipcMain.handle('plugins:remove', async (_e, pluginId: string) => {
+    await uninstallPlugin(pluginId)
   })
 
   // ---- Credentials ----

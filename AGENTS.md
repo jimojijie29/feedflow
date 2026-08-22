@@ -54,6 +54,32 @@ Credentials (e.g. cookies) are stored encrypted in the `credentials` table and s
 - `src/main/plugin-system/credentials.ts` — resolves credential references in source config to raw values
 - At startup, `src/main/index.ts` loads the cookie for the weibo and X plugins and injects it into the Electron session so images/videos load with auth
 
+### Credential & Cookie Authorization Rules (IMPORTANT)
+
+A plugin's `meta.cookieDomains` determines whether its provider appears in the
+**Chrome extension popup** (the cookie-sync UI that shows "授权"/"同步" buttons).
+Only declare `cookieDomains` for plugins that **actually use browser cookies**
+for authentication. Do NOT declare it just because the plugin fetches from that
+domain — many sources use public APIs or tokens and need no cookie sync.
+
+| Auth method | `cookieDomains` | `credential` field `credentialType` | Shows in extension popup? |
+|---|---|---|---|
+| No auth (public page/API) | **Omit** | No credential field | No |
+| Token / API key | **Omit** | `'token'` | No (managed in desktop 凭据 panel) |
+| Browser cookie | **Required** | `'cookie'` (default) | Yes |
+
+**Examples:**
+- GitHub Trending, Hacker News → public, no `cookieDomains`, no credential field
+- Product Hunt, V2EX → optional token, no `cookieDomains`, field has `credentialType: 'token'`
+- 微博, X → cookie required, `cookieDomains` set, field has `credentialType: 'cookie'`
+
+The registry auto-computes two fields from `configSchema`:
+- `credentialType` — `'token'` if any credential field has `credentialType: 'token'`, else `'cookie'`
+- `hasCredential` — `true` if the plugin has any `credential` field at all
+
+The desktop 凭据 panel only lists providers whose plugins have `hasCredential: true`,
+so no-auth plugins (GitHub, HN) are hidden there too.
+
 ### Refresh Lock
 
 `src/main/plugin-system/refresh-lock.ts` maintains an in-memory `Set` of source IDs currently being refreshed. Both the UI refresh path (`runner.ts`) and the MCP `refresh_source` tool acquire this lock, so the same source is never refreshed concurrently. Sources that are already refreshing are skipped.

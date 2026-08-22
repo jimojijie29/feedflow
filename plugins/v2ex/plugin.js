@@ -35,8 +35,7 @@ const meta = {
   color: '#333333',
   icon: '💬',
   provider: 'v2ex',
-  providerName: 'V2EX',
-  cookieDomains: ['v2ex.com']
+  providerName: 'V2EX'
 }
 
 // ============================================================
@@ -70,6 +69,7 @@ const configSchema = [
     key: 'token',
     label: 'V2EX Personal Access Token',
     type: 'credential',
+    credentialType: 'token',
     required: false,
     helpText:
       '仅"按节点订阅"模式需要。在 V2EX 设置 → 个人访问令牌中创建。可在多个 V2EX 信息源间复用。'

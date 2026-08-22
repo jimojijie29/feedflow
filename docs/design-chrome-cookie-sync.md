@@ -185,14 +185,14 @@ async function initialSync() {
 
 #### 3.2.5 心跳上报（Heartbeat）
 
-桌面端无法主动探测扩展是否安装，由扩展主动上报：
+桌面端无法主动探测扩展是否安装，由扩展主动上报。心跳间隔 **1 分钟**（v1.2.0 起，原为 60 分钟）——除存活上报外，响应体还携带 `refreshProviders` 列表，用于失效自愈（见 3.2.8）：
 
 ```javascript
 const HEARTBEAT_URL = 'http://127.0.0.1:33940/heartbeat'
 
 async function sendHeartbeat() {
   try {
-    await fetch(HEARTBEAT_URL, {
+    const res = await fetch(HEARTBEAT_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -200,16 +200,47 @@ async function sendHeartbeat() {
         version: chrome.runtime.getManifest().version,
       }),
     })
+    const data = await res.json()
+    // 桌面端检测到 Cookie 失效 → 立即重同步（含主动刷新兜底）
+    if (Array.isArray(data.refreshProviders) && data.refreshProviders.length) {
+      await syncProvidersFor(data.refreshProviders)
+    }
   } catch (e) { /* 桌面端未运行，静默忽略 */ }
 }
 
 chrome.runtime.onInstalled.addListener(sendHeartbeat)
 sendHeartbeat()
-chrome.alarms.create('heartbeat', { periodInMinutes: 60 })
+chrome.alarms.create('heartbeat', { periodInMinutes: 1 })
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'heartbeat') sendHeartbeat()
 })
 ```
+
+#### 3.2.8 失效自愈闭环（定期重同步 + 主动刷新）— v1.2.0
+
+仅靠 `onChanged` 被动监听存在三个漏洞：① 桌面端关闭期间 cookie 轮换，同步请求静默失败且不重试；② 轮换发生在安装扩展之前；③ 用户不浏览站点时浏览器 cookie 不变化，但服务端已轮换会话（如微博 XSRF-TOKEN）。v1.2.0 增加两层机制闭环：
+
+**定期强制重同步**：`chrome.alarms` 每 10 分钟对全部已授权域名强制重读 cookie 并推送，保证桌面端与浏览器的偏差不超过 10 分钟：
+
+```javascript
+chrome.alarms.create('resync', { periodInMinutes: 10 })
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === 'resync') resyncAll()   // 遍历已授权 provider 域名 syncDomain
+})
+```
+
+**主动刷新兜底**：`POST /sync` 若返回 `verified: false`（cookie 存在但服务端验证不通过，说明浏览器里的 cookie 本身也旧了），扩展后台打开一个隐藏标签页加载对应站点（如 `https://weibo.com`），真实页面加载会收到服务端 `Set-Cookie`，轮换出新的 `XSRF-TOKEN`/续期 `SUB`，等落地后重新读取并同步，再关闭标签页。每个域名 10 分钟最多触发一次，防止频繁加载触发风控。
+
+**闭环时序**（以微博为例）：
+
+```
+刷新失败(ok=-100/403) → runner 标记 provider=weibo 为 stale
+→ 扩展 1 分钟心跳收到 refreshProviders=['weibo'] → 立即重同步浏览器 cookie
+→ 服务端验证通过 → 存储新 cookie + 清除 stale 标记
+→ 桌面端自动重新拉取微博信息流 → 刷新成功，用户无感
+```
+
+若浏览器 cookie 本身已旧，重同步返回 `verified:false` → 触发隐藏标签页主动刷新 → 再次同步验证通过，闭环同样完成。
 
 #### 3.2.6 动态 Provider 与授权
 
@@ -612,8 +643,10 @@ async function handleSync(req: SyncRequest): Promise<SyncResponse> {
 - 扩展使用 `chrome.cookies.set` 写回浏览器
 - 实现"在 FeedFlow 中更新 Cookie，浏览器自动登录"
 
-### 7.3 凭证过期主动提醒
-- 桌面端检测到 Cookie 失效（抓取失败）时，通知用户"请在浏览器中重新登录，Cookie 将自动同步"
+### 7.3 凭证过期主动提醒（已实现为自动自愈，v1.2.0）
+- 桌面端检测到 Cookie 失效（抓取失败，`ok=-100`/`401`/`403`）时标记 provider 为 stale
+- 扩展 1 分钟心跳收到标记后自动重同步浏览器最新 Cookie，无需用户重新登录
+- 验证通过后桌面端自动重新拉取该 provider 的信息流，全程无感（见 3.2.8）
 
 ---
 

@@ -6,9 +6,12 @@ import styles from './RefreshErrorBanner.module.css'
 
 /** Shows a banner when source refresh fails, with cookie-sync guidance.
  *  If the extension is active, suggests re-login in the browser (auto-sync).
- *  Otherwise, suggests installing the extension or manually updating credentials. */
+ *  Otherwise, suggests installing the extension or manually updating credentials.
+ *
+ *  错误按当前浏览上下文过滤：单源视图只显示该源的刷新错误，
+ *  聚合流视图显示所有源的错误，避免在看 A 源时弹出 B 源的报错。 */
 export function RefreshErrorBanner(): JSX.Element | null {
-  const { refreshProgress } = useStore()
+  const { refreshProgress, selectedSourceId } = useStore()
   const [extStatus, setExtStatus] = useState<ExtensionStatus>({
     status: 'unknown',
     lastSeen: null,
@@ -27,7 +30,9 @@ export function RefreshErrorBanner(): JSX.Element | null {
     if (refreshProgress.length === 0) setDismissed(false)
   }, [refreshProgress.length])
 
-  const errors = refreshProgress.filter((p) => p.status === 'error')
+  const errors = refreshProgress.filter(
+    (p) => p.status === 'error' && (!selectedSourceId || p.sourceId === selectedSourceId)
+  )
   if (errors.length === 0 || dismissed) return null
 
   const error = errors[0]

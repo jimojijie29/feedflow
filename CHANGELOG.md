@@ -15,10 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - 支持用户上传 zip 压缩包安装插件：解压后自动校验 `package.json` 的 `feedflow` 字段与 `fetchItems` 实现，安装到 `{userData}/plugins/` 并即时注册生效
 - 插件列表区分「内置」与「用户安装」来源，用户安装的插件支持一键删除（同时清理目录、DB 记录及关联的信息源/条目）
+- 新增 GitHub Trending 插件：抓取 github.com/trending 热门仓库，支持按语言和时间范围过滤，无需认证
+- 新增 Hacker News 插件：基于官方公开 API，支持 Top / New / Best / Ask HN / Show HN / Jobs 多种信息流，无需认证
+- 新增 Product Hunt 插件：双模式——无 Token 时使用公开 Atom Feed（产品名 + 标语），填写 Developer Token 后使用 GraphQL API 获取完整描述、投票数、评论数、缩略图等
 
 ### Changed
 - Chrome 扩展 Cookie 同步升级：新增定期强制重同步（每 10 分钟）与失败自愈闭环——桌面端检测到 Cookie 失效时标记 provider，扩展在 1 分钟心跳内自动重同步浏览器最新 Cookie，必要时后台打开隐藏标签页触发站点轮换 cookie，验证通过后自动重新拉取对应信息流，全程无需手动操作
 - Chrome 扩展版本 1.1.0 → 1.2.0
+- 凭据与 Cookie 授权按真实情况区分：仅微博、X 等真正使用浏览器 Cookie 的 provider 出现在 Chrome 扩展弹窗中；GitHub Trending、Hacker News（无需认证）和 Product Hunt、V2EX（使用 Token）不再显示「授权」按钮。桌面端凭据面板也只展示需要凭据的 provider，并正确区分 Cookie / Token 类型
 
 ### Fixed
 - 刷新失败提示按当前浏览的信息源过滤：单源视图只显示该源的错误，不再在 v2ex 等源下弹出微博等其它源的 Cookie 检查报错

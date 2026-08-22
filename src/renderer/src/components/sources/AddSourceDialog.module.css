@@ -1,29 +1,40 @@
-.pluginGrid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--spacing-md);
-}
-
-.pluginCard {
+.pluginList {
   display: flex;
   flex-direction: column;
+  gap: var(--spacing-xs);
+}
+
+.pluginItem {
+  display: flex;
   align-items: center;
-  gap: var(--spacing-sm);
-  padding: var(--spacing-lg);
+  gap: var(--spacing-md);
+  padding: var(--spacing-md) var(--spacing-lg);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   background: var(--color-bg);
   cursor: pointer;
-  transition: border-color 0.15s, box-shadow 0.15s;
-  text-align: center;
+  transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
+  text-align: left;
+  width: 100%;
 }
-.pluginCard:hover {
+.pluginItem:hover {
   border-color: var(--color-primary);
   box-shadow: 0 0 0 1px var(--color-primary);
+  background: var(--color-bg-secondary);
 }
 
 .pluginIcon {
-  font-size: 32px;
+  font-size: 24px;
+  flex-shrink: 0;
+  width: 32px;
+  text-align: center;
+}
+
+.pluginText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
 }
 
 .pluginName {
@@ -34,10 +45,10 @@
 .pluginDesc {
   font-size: var(--font-size-sm);
   color: var(--color-text-secondary);
+  line-height: 1.4;
 }
 
 .emptyText {
-  grid-column: 1 / -1;
   text-align: center;
   color: var(--color-text-secondary);
   padding: var(--spacing-lg);

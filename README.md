@@ -3,7 +3,7 @@
 多源信息流聚合桌面应用 (multi-source feed aggregator desktop app).
 
 FeedFlow is an Electron desktop app that aggregates feeds from multiple sources
-(微博 / X / V2EX / …) into a single timeline. Each source is powered by a
+(微博 / X / V2EX / GitHub Trending / …) into a single timeline. Each source is powered by a
 plugin, and the app also exposes an MCP server so local AI agents can query the
 aggregated data.
 
@@ -63,6 +63,7 @@ feedflow/
 │   ├── weibo-group-chat/
 │   ├── x-home-timeline/
 │   ├── v2ex/
+│   ├── github-trending/
 │   └── mock-source/
 ├── docs/                  # design docs for plugins / MCP server / signing
 ├── electron.vite.config.ts

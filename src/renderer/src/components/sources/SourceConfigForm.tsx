@@ -231,12 +231,12 @@ export function SourceConfigForm({ schema, onSubmit, submitting, pluginId, onDyn
                 </Button>
               )}
 
-              {extStatus.status === 'active' && (
+              {field.credentialType !== 'token' && extStatus.status === 'active' && (
                 <span className={styles.help} style={{ marginTop: 6, display: 'block' }}>
                   💡 已检测到 FeedFlow 扩展，在浏览器中登录后 Cookie 会自动同步，无需手动添加。
                 </span>
               )}
-              {extStatus.status === 'unknown' && (
+              {field.credentialType !== 'token' && extStatus.status === 'unknown' && (
                 <span className={styles.help} style={{ marginTop: 6, display: 'block' }}>
                   💡 安装 <a href="#" onClick={(e) => { e.preventDefault(); window.open('https://chromewebstore.google.com/detail/feedflow/akacicfiihjhcjeifgibmhkobcaehiii') }}>FeedFlow Chrome 扩展</a> 可自动同步 Cookie，无需手动粘贴。
                 </span>
@@ -253,14 +253,14 @@ export function SourceConfigForm({ schema, onSubmit, submitting, pluginId, onDyn
                   />
                   <textarea
                     className={styles.textarea}
-                    placeholder="粘贴 Cookie"
+                    placeholder={field.credentialType === 'token' ? '粘贴 Token / 密钥' : '粘贴 Cookie'}
                     value={newCredValue}
                     rows={3}
                     onChange={(e) => setNewCredValue(e.target.value)}
                   />
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                     <Button type="button" variant="ghost" size="sm" onClick={handleVerifyCred} disabled={credVerifying}>
-                      {credVerifying ? '验证中...' : credVerifySuccess ? '✓ 已验证，重新验证' : '🔑 验证 Cookie'}
+                      {credVerifying ? '验证中...' : credVerifySuccess ? '✓ 已验证，重新验证' : `🔑 验证${field.credentialType === 'token' ? '凭据' : ' Cookie'}`}
                     </Button>
                     <Button type="button" variant="primary" size="sm" onClick={() => handleSaveCred(field.key)} disabled={credSaving}>
                       {credSaving ? '保存中...' : '保存凭据'}
@@ -272,7 +272,7 @@ export function SourceConfigForm({ schema, onSubmit, submitting, pluginId, onDyn
                   {credVerifyError && <span className={styles.authError}>{credVerifyError}</span>}
                   {credVerifySuccess && (
                     <span className={styles.authSuccess}>
-                      Cookie 有效{credVerifySuccess.screenName ? `，用户: ${credVerifySuccess.screenName}` : ''}
+                      {field.credentialType === 'token' ? '凭据' : 'Cookie'} 有效{credVerifySuccess.screenName ? `，用户: ${credVerifySuccess.screenName}` : ''}
                       {credVerifySuccess.uid ? ` (UID: ${credVerifySuccess.uid})` : ''}
                     </span>
                   )}

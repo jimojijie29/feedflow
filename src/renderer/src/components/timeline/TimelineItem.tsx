@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState } from 'react'
 import { Badge } from '../common/Badge'
 import { ImageLightbox } from '../common/ImageLightbox'
 import type { DisplayItem } from '@shared/types/item'
@@ -30,7 +30,6 @@ function formatFullTime(isoString: string): string {
 
 export function TimelineItem({ item }: TimelineItemProps): JSX.Element {
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null)
-  const [expanded, setExpanded] = useState(false)
   // 长文（被插件截断）内联展开：点击"查看更多"后通过 IPC 拉取完整正文
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState<string | null>(null)
@@ -52,19 +51,6 @@ export function TimelineItem({ item }: TimelineItemProps): JSX.Element {
   const isVideoMessage = mediaType === 10
   console.log('[TimelineItem] render', item.id, '| isTruncated=', isTruncated, '| media_type=', mediaType, '| contentTextLen=', (item.contentText || '').length, '| hasPermalink=', !!item.permalink)
 
-  // 内容容器 ref + 真实溢出检测：CSS 用 -webkit-line-clamp: 6 折叠长文，
-  // 但字符数 > 300 才显示展开按钮会漏掉「行数超 6 行但字符数不足 300」的情况
-  // （短行、多换行、带媒体的推文很常见），导致内容被截断却没有展开入口。
-  // 改为直接测量 scrollHeight > clientHeight 判断是否被 CSS 截断。
-  const contentRef = useRef<HTMLDivElement | HTMLParagraphElement | null>(null)
-  const [contentOverflow, setContentOverflow] = useState(false)
-  const setContentRef = (node: HTMLDivElement | HTMLParagraphElement | null) => {
-    contentRef.current = node
-    if (node) {
-      setContentOverflow(node.scrollHeight - node.clientHeight > 1)
-    }
-  }
-
   // 点击"查看更多"：通过 IPC 拉取单条微博完整正文并内联展开
   const handleViewMore = async () => {
     console.log('[TimelineItem] handleViewMore CLICKED for item', item.id, '| detailLoading=', detailLoading, '| fullContent=', !!fullContent)
@@ -81,7 +67,6 @@ export function TimelineItem({ item }: TimelineItemProps): JSX.Element {
       if (result?.content) {
         console.log('[TimelineItem] setting fullContent, textLen=', result.content.text?.length)
         setFullContent(result.content)
-        setExpanded(true)
       } else {
         throw new Error('返回内容为空')
       }
@@ -102,27 +87,9 @@ export function TimelineItem({ item }: TimelineItemProps): JSX.Element {
     mediaUrls = []
   }
 
-  // 判断内容是否需要展开/收起：用真实 DOM 溢出检测（scrollHeight > clientHeight）
-  // 替代原先的字符数阈值（>300），避免「行数超 6 行但字符数不足 300」时
-  // 内容被 CSS line-clamp 截断却没有展开按钮的问题。
+  // 内容：优先使用"查看更多"拉取的完整正文，否则使用列表接口返回的正文
   const activeContentText = fullContent ? fullContent.text : (item.contentText || '')
   const activeContentHtml = fullContent ? fullContent.html : item.contentHtml
-  // 折叠条件：未展开 且（非插件截断 或 已拉取完整正文）
-  const contentCollapsed = !expanded && (!isTruncated || !!fullContent)
-  const needsExpand = contentOverflow
-
-  // 折叠状态变化 / 窗口尺寸变化时重新测量，避免按钮残留或漏显
-  useEffect(() => {
-    const measure = () => {
-      const node = contentRef.current
-      if (node) {
-        setContentOverflow(node.scrollHeight - node.clientHeight > 1)
-      }
-    }
-    measure()
-    window.addEventListener('resize', measure)
-    return () => window.removeEventListener('resize', measure)
-  }, [contentCollapsed])
 
   // 图片 URL：以图片扩展名结尾，或是微博 msget 图片接口
   const IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg']
@@ -227,27 +194,13 @@ export function TimelineItem({ item }: TimelineItemProps): JSX.Element {
       <div className={styles.body}>
         {activeContentHtml ? (
           <div
-            ref={setContentRef}
-            className={`${styles.content} ${contentCollapsed ? styles.contentCollapsed : ''}`}
+            className={styles.content}
             dangerouslySetInnerHTML={{ __html: activeContentHtml }}
           />
         ) : (
-          <p
-            ref={setContentRef}
-            className={`${styles.content} ${contentCollapsed ? styles.contentCollapsed : ''}`}
-          >
+          <p className={styles.content}>
             {activeContentText}
           </p>
-        )}
-
-        {/* 展开/收起按钮（内容被 CSS 折叠时显示；截断内容需先点"查看更多"拉取完整正文） */}
-        {needsExpand && (
-          <button
-            className={styles.expandButton}
-            onClick={() => setExpanded((prev) => !prev)}
-          >
-            {expanded ? '收起' : '展开'}
-          </button>
         )}
 
         {/* 文本被截断时显示"查看更多"：内联拉取完整正文，不再跳转浏览器 */}

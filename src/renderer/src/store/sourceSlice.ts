@@ -22,6 +22,8 @@ export interface SourceSlice {
   pluginsLoading: boolean
   loadPlugins: () => Promise<void>
   getPluginConfigSchema: (pluginId: string) => Promise<ConfigField[]>
+  installPlugin: () => Promise<PluginMeta>
+  removePlugin: (pluginId: string) => Promise<void>
 
   // Timeline
   items: DisplayItem[]
@@ -138,6 +140,17 @@ export const createSourceSlice: StateCreator<SourceSlice, [], [], SourceSlice> =
 
   getPluginConfigSchema: async (pluginId: string) => {
     return (await window.api.getPluginConfigSchema(pluginId)) as ConfigField[]
+  },
+
+  installPlugin: async () => {
+    const meta = await window.api.installPlugin()
+    await get().loadPlugins()
+    return meta as PluginMeta
+  },
+
+  removePlugin: async (pluginId: string) => {
+    await window.api.removePlugin(pluginId)
+    await get().loadPlugins()
   },
 
   loadItems: async () => {

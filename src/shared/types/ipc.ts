@@ -15,6 +15,8 @@ export interface IpcChannelMap {
   'plugins:get-config-schema': { in: string; out: ConfigField[] }
   'plugins:verify-cookie': { in: { pluginId: string; cookie: string }; out: { valid: boolean; uid?: string; screenName?: string; error?: string } }
   'plugins:list-groups': { in: { pluginId: string; credentialId: string }; out: { label: string; value: string }[] }
+  'plugins:install': { in: void; out: PluginMeta }
+  'plugins:remove': { in: string; out: void }
 
   'credentials:list': { in: { provider?: string } | void; out: Credential[] }
   'credentials:add': { in: AddCredentialInput; out: Credential }

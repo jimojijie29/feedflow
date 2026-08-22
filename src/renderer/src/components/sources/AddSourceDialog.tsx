@@ -84,19 +84,21 @@ export function AddSourceDialog({ open, onClose }: AddSourceDialogProps): JSX.El
   return (
     <Dialog open={open} onClose={onClose} title={step === 'pick' ? '选择信息源类型' : '配置信息源'} width={520}>
       {step === 'pick' && (
-        <div className={styles.pluginGrid}>
+        <div className={styles.pluginList}>
           {plugins.length === 0 && (
             <p className={styles.emptyText}>暂无可用插件，请先安装插件</p>
           )}
           {plugins.map((plugin) => (
             <button
               key={plugin.id}
-              className={styles.pluginCard}
+              className={styles.pluginItem}
               onClick={() => handlePickPlugin(plugin)}
             >
               <span className={styles.pluginIcon}>{plugin.icon ?? '📡'}</span>
-              <span className={styles.pluginName}>{plugin.name}</span>
-              <span className={styles.pluginDesc}>{plugin.description}</span>
+              <span className={styles.pluginText}>
+                <span className={styles.pluginName}>{plugin.name}</span>
+                <span className={styles.pluginDesc}>{plugin.description}</span>
+              </span>
             </button>
           ))}
         </div>

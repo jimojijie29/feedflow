@@ -1,0 +1,18 @@
+{
+  "name": "feedflow-plugin-hacker-news",
+  "version": "1.0.0",
+  "description": "获取 Hacker News 热门/最新/最佳故事（基于官方公开 API，无需认证）",
+  "main": "plugin.js",
+  "feedflow": {
+    "id": "feedflow-plugin-hacker-news",
+    "name": "Hacker News",
+    "version": "1.0.0",
+    "description": "获取 Hacker News 热门/最新/最佳故事（基于官方公开 API，无需认证）",
+    "author": "FeedFlow",
+    "color": "#ff6600",
+    "icon": "📰",
+    "provider": "hacker-news",
+    "providerName": "Hacker News",
+    "cookieDomains": ["news.ycombinator.com"]
+  }
+}

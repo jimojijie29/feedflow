@@ -11,6 +11,7 @@ export function initializeDatabase(): void {
       description TEXT DEFAULT '',
       entry_path  TEXT NOT NULL,
       provider    TEXT NOT NULL DEFAULT '',
+      source      TEXT NOT NULL DEFAULT 'builtin',
       enabled     INTEGER NOT NULL DEFAULT 1,
       installed_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
@@ -98,6 +99,17 @@ export function initializeDatabase(): void {
     }
   } catch (err) {
     console.error('[Schema] plugins provider migration failed:', err)
+  }
+
+  // Migration: add source column to existing plugins table if not present.
+  // 'builtin' = shipped with the app, 'user' = installed from a zip by the user.
+  try {
+    const cols = db.prepare("PRAGMA table_info(plugins)").all() as { name: string }[]
+    if (!cols.some((c) => c.name === 'source')) {
+      db.exec(`ALTER TABLE plugins ADD COLUMN source TEXT NOT NULL DEFAULT 'builtin'`)
+    }
+  } catch (err) {
+    console.error('[Schema] plugins source migration failed:', err)
   }
 
   // Migration: credentials.plugin_id -> credentials.provider

@@ -1,0 +1,17 @@
+{
+  "name": "feedflow-plugin-github-trending",
+  "version": "1.0.0",
+  "description": "获取 GitHub Trending 热门仓库（基于 github.com/trending 页面，无需认证）",
+  "main": "plugin.js",
+  "feedflow": {
+    "id": "feedflow-plugin-github-trending",
+    "name": "GitHub Trending",
+    "version": "1.0.0",
+    "description": "获取 GitHub Trending 热门仓库（基于 github.com/trending 页面，无需认证）",
+    "author": "FeedFlow",
+    "color": "#24292e",
+    "icon": "🔥",
+    "provider": "github",
+    "providerName": "GitHub"
+  }
+}

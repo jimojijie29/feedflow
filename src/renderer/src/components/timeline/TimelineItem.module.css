@@ -68,29 +68,6 @@
   object-fit: contain;
 }
 
-.contentCollapsed {
-  display: -webkit-box;
-  -webkit-line-clamp: 6;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.expandButton {
-  margin-top: var(--spacing-xs);
-  padding: 2px 8px;
-  font-size: var(--font-size-sm);
-  color: var(--color-primary);
-  background: none;
-  border: none;
-  cursor: pointer;
-  border-radius: var(--radius-sm);
-  transition: background 0.15s;
-}
-
-.expandButton:hover {
-  background: var(--color-bg-secondary);
-}
-
 .viewMoreLink {
   display: inline-block;
   margin-top: var(--spacing-xs);
@@ -273,29 +250,6 @@
   width: auto;
   vertical-align: middle;
   object-fit: contain;
-}
-
-.chatContentCollapsed {
-  display: -webkit-box;
-  -webkit-line-clamp: 4;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.chatExpandButton {
-  margin-top: 2px;
-  margin-left: 36px;
-  padding: 1px 6px;
-  font-size: var(--font-size-xs);
-  color: var(--color-primary);
-  background: none;
-  border: none;
-  cursor: pointer;
-  border-radius: var(--radius-sm);
-}
-
-.chatExpandButton:hover {
-  background: var(--color-bg-secondary);
 }
 
 .chatMediaGrid {

@@ -15,6 +15,8 @@ const api = {
     ipcRenderer.invoke('plugins:verify-cookie', { pluginId, cookie }),
   listGroups: (pluginId: string, credentialId: string) =>
     ipcRenderer.invoke('plugins:list-groups', { pluginId, credentialId }),
+  installPlugin: () => ipcRenderer.invoke('plugins:install'),
+  removePlugin: (pluginId: string) => ipcRenderer.invoke('plugins:remove', pluginId),
 
   // Credentials
   listCredentials: (provider?: string) => ipcRenderer.invoke('credentials:list', { provider }),

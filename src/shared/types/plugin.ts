@@ -19,6 +19,11 @@ export interface PluginMeta {
   homepage?: string
   feedType?: FeedType
   /**
+   * Whether the plugin is built-in (shipped with the app) or user-installed
+   * (extracted from a zip uploaded by the user).
+   */
+  source?: 'builtin' | 'user'
+  /**
    * Service provider this plugin belongs to. Credentials are scoped to a
    * provider, so multiple plugins of the same provider (e.g. "微博关注流"
    * and "微博群聊" both under "weibo") can share the same cookie.
@@ -37,6 +42,21 @@ export interface PluginMeta {
    * When omitted, the extension cannot auto-sync this provider's cookies.
    */
   cookieDomains?: string[]
+  /**
+   * The type of credential this provider uses. Determined automatically from
+   * the plugin's configSchema: if any `credential` field has
+   * `credentialType: 'token'`, this is set to `'token'`; otherwise `'cookie'`.
+   * Used by the credential UI to show appropriate labels (e.g. "Cookie" vs
+   * "Token") and hide cookie-specific hints (Chrome 扩展同步) for token providers.
+   */
+  credentialType?: 'cookie' | 'token'
+  /**
+   * Whether the plugin has any credential field (cookie or token) in its
+   * configSchema. Plugins without credentials (e.g. GitHub Trending, Hacker
+   * News) are excluded from credential management UI.
+   * Determined automatically from configSchema.
+   */
+  hasCredential?: boolean
 }
 
 /** A single configuration field rendered as a form input */
@@ -51,6 +71,13 @@ export interface ConfigField {
   min?: number
   max?: number
   helpText?: string
+  /**
+   * Only applies to `type: 'credential'`. Determines whether the credential
+   * is a cookie (default) or a generic token/secret. Cookie-specific UI
+   * (Chrome 扩展同步提示、"粘贴 Cookie" 占位符、"验证 Cookie" 按钮) is only
+   * shown when this is 'cookie'.
+   */
+  credentialType?: 'cookie' | 'token'
 }
 
 /** User-provided config for a source instance */
