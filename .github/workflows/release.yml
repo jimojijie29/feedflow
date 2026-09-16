@@ -13,6 +13,10 @@ on:
       tag:
         description: '要发布的 tag（留空则使用当前触发的 ref）'
         required: false
+      skip_extension_publish:
+        description: '跳过 Chrome Web Store 扩展发布（重跑桌面端发布、或扩展版本已提交审核时勾选）'
+        type: boolean
+        default: false
 
 # 创建 Release 需要写仓库内容的权限
 permissions:
@@ -92,10 +96,14 @@ jobs:
       matrix:
         include:
           # macOS：同时出 arm64（Apple Silicon）与 x64（Intel）
-          - os: macos-latest
+          # 固定 macos-15：macos-26（Tahoe, Darwin 25.6）加强了 keychain 限制，
+          # electron-builder 24.x 的临时 keychain 签名流程会在 set-key-partition-list
+          # 阶段失败（SecKeychainUnlock passphrase incorrect，upstream issue #10066，
+          # #10101 修复）。升级到含该修复的 electron-builder 版本后可改回 macos-latest。
+          - os: macos-15
             platform: mac
             arch: arm64
-          - os: macos-latest
+          - os: macos-15
             platform: mac
             arch: x64
           # Windows
@@ -278,8 +286,9 @@ jobs:
             echo "::notice::Chrome Web Store 发布凭据未配置，跳过发布。"
           fi
 
-      # 仅当 extensions/ 目录自上一个 release tag 以来有变更时才发布到商店，
+      # 仅当 extensions/ 目录自上一个 release tag 以来有代码变更时才发布到商店，
       # 避免桌面端发版时重复提交未改动的扩展进入审核队列。
+      # README 等 markdown 文档变更不触发发布（商店按 manifest 版本去重，同版本重复上传会报错）。
       - name: Check if extension changed since last release
         id: ext-changed
         run: |
@@ -289,7 +298,7 @@ jobs:
             echo "::notice::未找到上一个 release tag，按首次发布处理。"
             exit 0
           fi
-          if git diff --quiet "$PREV_TAG" HEAD -- extensions/; then
+          if git diff --quiet "$PREV_TAG" HEAD -- extensions/ ':(exclude)extensions/**/*.md'; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "::notice::扩展自 $PREV_TAG 以来无变化，跳过 Chrome Web Store 发布。"
           else
@@ -297,8 +306,12 @@ jobs:
             echo "::notice::扩展自 $PREV_TAG 以来有变更，将发布到 Chrome Web Store。"
           fi
 
+      - name: Skip notice
+        if: inputs.skip_extension_publish == true
+        run: echo "::notice::已手动跳过 Chrome Web Store 发布（skip_extension_publish=true）。"
+
       - name: Upload and publish
-        if: steps.creds.outputs.configured == 'true' && steps.ext-changed.outputs.changed == 'true'
+        if: inputs.skip_extension_publish != true && steps.creds.outputs.configured == 'true' && steps.ext-changed.outputs.changed == 'true'
         env:
           CWS_SERVICE_ACCOUNT_KEY: ${{ secrets.CWS_SERVICE_ACCOUNT_KEY }}
           CWS_PUBLISHER_ID: ${{ vars.CWS_PUBLISHER_ID }}

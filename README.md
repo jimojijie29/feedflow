@@ -3,18 +3,53 @@
 多源信息流聚合桌面应用 (multi-source feed aggregator desktop app).
 
 FeedFlow is an Electron desktop app that aggregates feeds from multiple sources
-(微博 / X / V2EX / GitHub Trending / …) into a single timeline. Each source is powered by a
+(微博 / X / V2EX / GitHub Trending / Hacker News / Product Hunt / …) into a single timeline. Each source is powered by a
 plugin, and the app also exposes an MCP server so local AI agents can query the
 aggregated data.
 
 ## Features
 
-- **Multi-source timeline** — unify 微博, X, V2EX, and custom sources into one feed
-- **Plugin system** — sources are plugins; drop a new one into `plugins/` (or `{userData}/plugins/`)
+- **Multi-source timeline** — unify 微博, X, V2EX, GitHub Trending, Hacker News, Product Hunt and custom sources into one feed
+- **Plugin system** — sources are plugins; drop a new one into `plugins/` (or install a zip / `{userData}/plugins/`)
+- **Companion Chrome extension** — auto-syncs browser cookies for cookie-based sources (微博, X), with self-healing re-sync
 - **Encrypted credentials** — cookies/credentials are stored encrypted (Electron `safeStorage`) and shared across plugins of the same provider
 - **MCP server** — exposes `list_sources`, `list_items`, `search_items`, `get_item`, `refresh_source` over the Model Context Protocol (HTTP) at `http://127.0.0.1:33939/mcp`
 - **Truncated-item expansion** — long posts (e.g. long weibo) are auto-expanded inline
 - **Cross-platform packaging** — macOS (dmg + zip), Windows (nsis), Linux (AppImage + deb)
+
+## Download
+
+Grab the latest installer from [GitHub Releases](https://github.com/joyme123/feedflow/releases/latest):
+
+| Platform | Asset |
+|----------|-------|
+| macOS (Apple Silicon) | `*-arm64.dmg` |
+| macOS (Intel) | `*-x64.dmg` |
+| Windows (x64) | `*.exe` (NSIS installer) |
+| Linux (x64) | `*.AppImage` or `*.deb` |
+
+After install the app keeps itself up to date via `electron-updater`. Prefer
+building yourself? See [Getting Started](#getting-started).
+
+## Chrome Extension (Cookie Sync)
+
+Sources that authenticate with **browser cookies** — currently 微博 and X —
+need their cookies imported into FeedFlow. The companion extension
+**FeedFlow Cookie Sync** does this automatically:
+
+👉 **[Install from the Chrome Web Store](https://chromewebstore.google.com/detail/akacicfiihjhcjeifgibmhkobcaehiii)**
+
+- watches cookie changes and pushes the freshest cookies to the desktop app
+  over localhost (debounced 5 s; no manual copy-paste)
+- self-healing: when the desktop app detects an expired cookie, the extension
+  re-syncs within a heartbeat and can rotate cookies via a hidden background
+  tab; a forced re-sync runs every 10 minutes
+- a popup showing per-source auth / cookie / sync status, with manual sync
+
+Sources that use a token (V2EX, Product Hunt) or need no auth at all
+(GitHub Trending, Hacker News) do **not** require the extension.
+Extension source and development setup live in
+[`extensions/cookie-sync/`](./extensions/cookie-sync/).
 
 ## Tech Stack
 
@@ -64,7 +99,10 @@ feedflow/
 │   ├── x-home-timeline/
 │   ├── v2ex/
 │   ├── github-trending/
+│   ├── hacker-news/
+│   ├── product-hunt/
 │   └── mock-source/
+├── extensions/cookie-sync/  # companion Chrome extension (cookie sync)
 ├── docs/                  # design docs for plugins / MCP server / signing
 ├── electron.vite.config.ts
 ├── electron-builder.yml
