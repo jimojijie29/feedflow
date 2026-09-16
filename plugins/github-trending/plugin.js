@@ -15,6 +15,15 @@
 
 const https = require('https')
 
+// 优先使用 Electron 主进程的 net 模块(Chromium 网络栈,自动遵循系统代理)。
+// 直接用 Node https 时不经过系统代理,github.com 直连在部分网络环境下会被重置/超时。
+let electronNet = null
+try {
+  electronNet = require('electron').net
+} catch {
+  // 非 Electron 环境(如单元测试)回退到 Node https
+}
+
 // ============================================================
 // Plugin Metadata
 // ============================================================
@@ -86,35 +95,79 @@ const configSchema = [
 // ============================================================
 
 function fetchTrendingPage(language, since) {
-  return new Promise((resolve, reject) => {
-    let path = '/trending'
-    if (language) {
-      path += '/' + encodeURIComponent(language)
-    }
-    path += '?since=' + encodeURIComponent(since)
+  let path = '/trending'
+  if (language) {
+    path += '/' + encodeURIComponent(language)
+  }
+  path += '?since=' + encodeURIComponent(since)
 
+  // Electron 环境走 net.fetch(遵循系统代理);否则回退 Node https(直连)
+  if (electronNet) return fetchTrendingPageViaElectronNet(path)
+  return fetchTrendingPageViaNodeHttps(path)
+}
+
+const TRENDING_HEADERS = {
+  'User-Agent':
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+  'Accept-Language': 'en-US,en;q=0.9'
+}
+
+function assertTrendingStatus(status) {
+  if (status >= 200 && status < 300) return
+  if (status === 429) {
+    throw new Error('GitHub 请求过于频繁,请稍后重试(429 Too Many Requests)')
+  }
+  throw new Error(`GitHub Trending 页面获取失败,HTTP ${status}`)
+}
+
+/** 通过 Electron net.fetch 抓取(Chromium 网络栈,遵循系统代理) */
+async function fetchTrendingPageViaElectronNet(path) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 20000)
+
+  let res
+  try {
+    res = await electronNet.fetch(`https://github.com${path}`, {
+      method: 'GET',
+      headers: TRENDING_HEADERS,
+      // 与原 Node https 实现行为一致:不携带任何 Cookie
+      credentials: 'omit',
+      signal: controller.signal
+    })
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      throw new Error('GitHub Trending 请求超时,请稍后重试')
+    }
+    throw new Error(`GitHub Trending 请求失败: ${err.message}`)
+  } finally {
+    clearTimeout(timer)
+  }
+
+  const body = await res.text()
+  assertTrendingStatus(res.status)
+  return body
+}
+
+/** 通过 Node https 抓取(直连,不经过系统代理;仅作非 Electron 环境回退) */
+function fetchTrendingPageViaNodeHttps(path) {
+  return new Promise((resolve, reject) => {
     const req = https.get(
       {
         hostname: 'github.com',
         path,
-        headers: {
-          'User-Agent':
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'en-US,en;q=0.9'
-        },
+        headers: TRENDING_HEADERS,
         timeout: 20000
       },
       (res) => {
         let body = ''
         res.on('data', (chunk) => (body += chunk))
         res.on('end', () => {
-          if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+          try {
+            assertTrendingStatus(res.statusCode || 0)
             resolve(body)
-          } else if (res.statusCode === 429) {
-            reject(new Error('GitHub 请求过于频繁，请稍后重试（429 Too Many Requests）'))
-          } else {
-            reject(new Error(`GitHub Trending 页面获取失败，HTTP ${res.statusCode}`))
+          } catch (err) {
+            reject(err)
           }
         })
       }
@@ -122,7 +175,7 @@ function fetchTrendingPage(language, since) {
 
     req.on('timeout', () => {
       req.destroy()
-      reject(new Error('GitHub Trending 请求超时，请稍后重试'))
+      reject(new Error('GitHub Trending 请求超时,请稍后重试'))
     })
     req.on('error', (err) => {
       reject(new Error(`GitHub Trending 请求失败: ${err.message}`))
