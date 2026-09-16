@@ -18,6 +18,15 @@
 
 const https = require('https')
 
+// 优先使用 Electron 主进程的 net 模块（Chromium 网络栈，自动遵循系统代理）。
+// 直接用 Node https 时不经过系统代理，在需要代理才能访问 x.com 的网络环境下会超时。
+let electronNet = null
+try {
+  electronNet = require('electron').net
+} catch {
+  // 非 Electron 环境（如单元测试）回退到 Node https
+}
+
 const X_HOST = 'x.com'
 
 // X.com 网页端使用的公开 Bearer Token（所有网页端用户共享）
@@ -110,6 +119,92 @@ function getCookieValue(cookie, name) {
 
 /** 发起 HTTPS POST 请求（带 Cookie + Bearer Token） */
 function httpsPost(path, body, cookie) {
+  // Electron 环境走 net.fetch（遵循系统代理）；否则回退 Node https（直连）
+  if (electronNet) return httpsPostViaElectronNet(path, body, cookie)
+  return httpsPostViaNodeHttps(path, body, cookie)
+}
+
+/**
+ * 统一处理 GraphQL 响应：状态码检查 + JSON 解析 + API 错误提取
+ * （net.fetch 与 Node https 两种传输路径共用）
+ */
+function handleApiResponse(path, statusCode, responseBody) {
+  console.log(`[x-api] ${path} -> status=${statusCode}, bodyLength=${responseBody.length}`)
+
+  if (statusCode === 401) {
+    throw new ApiError(401, 'Cookie 已过期或无效，请重新登录 x.com 获取')
+  }
+  if (statusCode === 403) {
+    throw new ApiError(403, 'Cookie 已过期或无效，请重新登录 x.com 获取')
+  }
+  if (statusCode === 429) {
+    throw new ApiError(429, '请求过于频繁，请稍后重试')
+  }
+
+  // 非 2xx 状态码（非上述特殊状态）时记录响应体以便排查
+  if (statusCode < 200 || statusCode >= 300) {
+    console.error(`[x-api] Unexpected status ${statusCode}:`, responseBody.slice(0, 500))
+    throw new ApiError(statusCode, `请求失败 (HTTP ${statusCode})`)
+  }
+
+  let json
+  try {
+    json = JSON.parse(responseBody)
+  } catch {
+    console.error(`[x-api] Failed to parse response body:`, responseBody.slice(0, 500))
+    throw new Error(`解析 API 响应失败: ${responseBody.slice(0, 200)}`)
+  }
+  if (json.errors && Array.isArray(json.errors) && json.errors.length > 0) {
+    const err = json.errors[0]
+    console.error(`[x-api] API error response:`, JSON.stringify(json.errors).slice(0, 500))
+    throw new ApiError(err.code || -1, err.message || 'API 返回错误')
+  }
+  return json
+}
+
+/** 通过 Electron net.fetch 发起 POST（Chromium 网络栈，遵循系统代理） */
+async function httpsPostViaElectronNet(path, body, cookie) {
+  const cleanCookie = sanitizeCookie(cookie)
+  const csrfToken = getCookieValue(cleanCookie, 'ct0')
+
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 15000)
+
+  let res
+  try {
+    res = await electronNet.fetch(`https://${X_HOST}${path}`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${PUBLIC_BEARER_TOKEN}`,
+        'Content-Type': 'application/json',
+        'Cookie': cleanCookie,
+        'x-csrf-token': csrfToken,
+        'x-twitter-active-user': 'yes',
+        'x-twitter-client-language': 'en',
+        'x-twitter-client-type': 'web',
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': '*/*',
+        'Origin': 'https://x.com',
+        'Referer': 'https://x.com/home'
+      },
+      body: JSON.stringify(body),
+      // 只使用显式传入的 Cookie 头，不混入 Electron 会话 Cookie 罐中的内容
+      credentials: 'omit',
+      signal: controller.signal
+    })
+  } catch (err) {
+    if (err.name === 'AbortError') throw new Error('请求超时')
+    throw err
+  } finally {
+    clearTimeout(timer)
+  }
+
+  const responseBody = await res.text()
+  return handleApiResponse(path, res.status, responseBody)
+}
+
+/** 通过 Node https 发起 POST（直连，不经过系统代理；仅作非 Electron 环境回退） */
+function httpsPostViaNodeHttps(path, body, cookie) {
   const cleanCookie = sanitizeCookie(cookie)
   const csrfToken = getCookieValue(cleanCookie, 'ct0')
 
@@ -140,40 +235,10 @@ function httpsPost(path, body, cookie) {
         let responseBody = ''
         res.on('data', (chunk) => (responseBody += chunk))
         res.on('end', () => {
-          console.log(`[x-api] ${path} -> status=${res.statusCode}, bodyLength=${responseBody.length}`)
-
-          if (res.statusCode === 401) {
-            reject(new ApiError(401, 'Cookie 已过期或无效，请重新登录 x.com 获取'))
-            return
-          }
-          if (res.statusCode === 403) {
-            reject(new ApiError(403, 'Cookie 已过期或无效，请重新登录 x.com 获取'))
-            return
-          }
-          if (res.statusCode === 429) {
-            reject(new ApiError(429, '请求过于频繁，请稍后重试'))
-            return
-          }
-
-          // 非 2xx 状态码（非上述特殊状态）时记录响应体以便排查
-          if (res.statusCode < 200 || res.statusCode >= 300) {
-            console.error(`[x-api] Unexpected status ${res.statusCode}:`, responseBody.slice(0, 500))
-            reject(new ApiError(res.statusCode, `请求失败 (HTTP ${res.statusCode})`))
-            return
-          }
-
           try {
-            const json = JSON.parse(responseBody)
-            if (json.errors && Array.isArray(json.errors) && json.errors.length > 0) {
-              const err = json.errors[0]
-              console.error(`[x-api] API error response:`, JSON.stringify(json.errors).slice(0, 500))
-              reject(new ApiError(err.code || -1, err.message || 'API 返回错误'))
-              return
-            }
-            resolve(json)
-          } catch (e) {
-            console.error(`[x-api] Failed to parse response body:`, responseBody.slice(0, 500))
-            reject(new Error(`解析 API 响应失败: ${responseBody.slice(0, 200)}`))
+            resolve(handleApiResponse(path, res.statusCode, responseBody))
+          } catch (err) {
+            reject(err)
           }
         })
       }
@@ -198,6 +263,44 @@ function httpsPost(path, body, cookie) {
  * 发起 HTTPS GET 请求，返回响应体文本（用于抓取 X.com 网页和 JS bundle）
  */
 function httpsGet(host, path) {
+  // Electron 环境走 net.fetch（遵循系统代理）；否则回退 Node https（直连）
+  if (electronNet) return httpsGetViaElectronNet(host, path)
+  return httpsGetViaNodeHttps(host, path)
+}
+
+/** 通过 Electron net.fetch 发起 GET（Chromium 网络栈，遵循系统代理） */
+async function httpsGetViaElectronNet(host, path) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 15000)
+
+  let res
+  try {
+    res = await electronNet.fetch(`https://${host}${path}`, {
+      method: 'GET',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': '*/*'
+      },
+      // 与原 Node https 实现行为一致：不携带任何 Cookie
+      credentials: 'omit',
+      signal: controller.signal
+    })
+  } catch (err) {
+    if (err.name === 'AbortError') throw new Error('GET 请求超时')
+    throw err
+  } finally {
+    clearTimeout(timer)
+  }
+
+  const body = await res.text()
+  if (res.status >= 200 && res.status < 300) {
+    return body
+  }
+  throw new Error(`GET ${host}${path} failed: HTTP ${res.status}`)
+}
+
+/** 通过 Node https 发起 GET（直连，不经过系统代理；仅作非 Electron 环境回退） */
+function httpsGetViaNodeHttps(host, path) {
   return new Promise((resolve, reject) => {
     const req = https.request(
       {
