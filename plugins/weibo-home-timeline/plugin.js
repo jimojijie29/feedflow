@@ -1,5 +1,5 @@
 /**
- * plugin.js — 微博关注信息流插件（免费版 v4.0，基于 weibo.com AJAX API）
+ * plugin.js — 微博关注信息流插件（免费版 v4.3，基于 weibo.com AJAX API）
  *
  * 通过 weibo.com 的 AJAX JSON API 直接获取关注信息流。
  * 无需 OAuth、无需 App Key/Secret、完全免费、无需手动配置 UID。
@@ -8,16 +8,25 @@
  * 数据来源: https://weibo.com (微博桌面版 AJAX 接口)
  * 认证方式: Cookie (用户从浏览器登录后复制)
  *
- * 核心接口:
- *   - /ajax/feed/unreadfriendstimeline — 关注时间线（一次调用获取整个关注流）
- *   - /ajax/statuses/mymblog — 单用户微博（备用方案）
+ * 核心接口（按回退顺序）:
+ *   - /ajax/feed/friendstimeline        — 完整关注时间线（与已读状态无关，主接口）
+ *   - /ajax/feed/unreadfriendstimeline  — 未读关注流（已读微博不返回，回退）
+ *   - /ajax/statuses/friends_timeline   — 旧版关注流（回退）
+ *   - /ajax/statuses/mymblog            — 单用户微博（备用方案）
  *
- * v4.0 改进: 使用 unreadfriendstimeline 接口，1 次 API 调用替代 47+ 次调用，
- *           大幅提升性能并避免触发限流。
+ * v4.2 改进: 主接口切换为 friendstimeline，修复用户在浏览器/手机端已读过的微博
+ *           从未读接口消失、导致 App 漏抓的问题；刷新时自动向下翻页（默认上限 5 页），
+ *           补抓两次刷新之间超过单页条数的微博；并通过会话内增量水位线
+ *           （记住上次刷新见过的最新微博 ID）自动回追，避免高密度关注流在
+ *           固定页数窗口外的内容永久丢失。
+ *
+ * v4.3 改进: 支持按关注分组抓取（list_id）。默认抓取「特别关注」分组，
+ *           可通过 listId 配置切换为全部关注（all）或其它分组的 gid。
  */
 
 const {
   fetchFriendsTimeline,
+  fetchFriendsTimelineFull,
   fetchFriendsTimelineFallback,
   fetchAllGroups,
   extractAllFollowListId,
@@ -27,6 +36,7 @@ const {
   extractStatuses
 } = require('./weibo-api')
 const { verifyCookie } = require('./auth')
+const fs = require('fs')
 
 // ============================================================
 // Plugin Metadata
@@ -35,7 +45,7 @@ const { verifyCookie } = require('./auth')
 const meta = {
   id: 'feedflow-plugin-weibo',
   name: '微博关注流',
-  version: '4.0.0',
+  version: '4.3.0',
   description: '免费自动获取微博关注信息流（基于 weibo.com AJAX API，无需 OAuth）',
   author: 'FeedFlow',
   color: '#E6162D',
@@ -64,6 +74,21 @@ const configSchema = [
     min: 1,
     max: 50,
     helpText: '单次刷新获取的微博数量'
+  },
+  {
+    key: 'pages',
+    label: '每次刷新翻页数上限',
+    type: 'number',
+    default: 20,
+    min: 1,
+    max: 20,
+    helpText: '刷新会自动向下回追到上次见过的最新微博，翻页数只是上限（稳态下每次仅需 1-2 页）。长时间未刷新后想补抓更多历史时可调大'
+  },
+  {
+    key: 'listId',
+    label: '关注分组 gid',
+    type: 'text',
+    helpText: '留空默认抓取「特别关注」分组；填 all 抓取全部关注；也可填其它分组的 gid（在 weibo.com/mygroups 页面点进分组，地址栏 gid= 后面的数字）'
   }
 ]
 
@@ -74,6 +99,55 @@ const configSchema = [
 let cachedListId = null
 let listIdCacheTime = 0
 const LIST_ID_CACHE_TTL = 60 * 60 * 1000 // list_id 缓存 1 小时
+
+// 默认抓取「特别关注」分组的 gid（对应 weibo.com/mygroups?gid=3649296794726060）
+const DEFAULT_SPECIAL_FOLLOW_GID = '3649296794726060'
+const EXTERNAL_FOLLOWS_FILE = 'D:\\AI_Tools\\feedflow-archive\\config\\digest-follows.json'
+let externalFollowsCache = null
+
+function loadExternalWeiboFollows() {
+  let stat
+  try {
+    stat = fs.statSync(EXTERNAL_FOLLOWS_FILE)
+  } catch (err) {
+    throw new Error(`外部微博关注人清单不可用：${EXTERNAL_FOLLOWS_FILE}（${err.message}）`)
+  }
+  if (externalFollowsCache && externalFollowsCache.mtimeMs === stat.mtimeMs) {
+    return externalFollowsCache.ids
+  }
+  let data
+  try {
+    data = JSON.parse(fs.readFileSync(EXTERNAL_FOLLOWS_FILE, 'utf8'))
+  } catch (err) {
+    throw new Error(`外部微博关注人清单 JSON 无法解析：${EXTERNAL_FOLLOWS_FILE}（${err.message}）`)
+  }
+  const weibo = data && data.weibo
+  const ids = weibo && typeof weibo === 'object' && !Array.isArray(weibo)
+    ? Object.keys(weibo).map((id) => String(id).trim()).filter((id) => /^\d+$/.test(id))
+    : []
+  if (ids.length === 0) {
+    throw new Error(`外部微博关注人清单为空或缺少 weibo 映射：${EXTERNAL_FOLLOWS_FILE}`)
+  }
+  const result = [...new Set(ids)]
+  externalFollowsCache = { mtimeMs: stat.mtimeMs, ids: result }
+  console.log(`[weibo] loaded external follow list: ${result.length} users from ${EXTERNAL_FOLLOWS_FILE}`)
+  return result
+}
+
+function statusAuthorId(status) {
+  const user = status?.user || {}
+  return user.idstr || user.id || status?.user_id || status?.uid || null
+}
+
+// 会话内增量水位线：cookie + list_id → 上次刷新见过的最新微博 ID。
+// 刷新时向下翻页直到触及水位线，使翻页深度自动适配实际新增量
+// （高密度关注流下，固定页数窗口外、两次刷新之间的内容会永久丢失）。
+// key 含 list_id：切换分组后旧分组的最高 ID 普遍高于新分组，
+// 若不区分会让首次刷新误判"已回追到水位线"而提前结束。
+// 仅存活于主进程运行期间；重启后首次刷新按固定页数窗口补抓。
+// 注意: Chrome 扩展自动同步会轮换 Cookie 值，轮换后水位线随之重置，
+// 下一次刷新退化为固定页数窗口补抓（无害，仅多抓几页）。
+const newestWatermarkByCookie = new Map()
 
 // ============================================================
 // 数据映射
@@ -230,10 +304,51 @@ function stripHtml(html) {
 // fetchItems — 核心拉取逻辑
 // ============================================================
 
+/** 翻页间隔，避免连续请求触发限流 */
+const PAGE_DELAY_MS = 500
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/** 提取微博条目的稳定 ID（idstr 优先） */
+function statusIdOf(status) {
+  if (!status) return ''
+  return status.idstr || (status.id != null ? String(status.id) : '')
+}
+
+/**
+ * 按回退链请求一页关注时间线:
+ *   friendstimeline（完整关注流，与已读状态无关，主接口）
+ *   → unreadfriendstimeline（未读接口，用户在浏览器/手机端已读的微博不返回）
+ *   → statuses/friends_timeline（旧版接口，不需要 list_id/refresh）
+ */
+async function fetchTimelinePage(cookie, params) {
+  try {
+    return { response: await fetchFriendsTimelineFull(cookie, params), endpoint: 'friendstimeline' }
+  } catch (errFull) {
+    console.warn('[weibo] friendstimeline 失败，尝试 unreadfriendstimeline 回退:', errFull.message)
+    await sleep(300) // 回退链之间加短延迟，避免限流时请求反而加倍
+    try {
+      return { response: await fetchFriendsTimeline(cookie, params), endpoint: 'unreadfriendstimeline' }
+    } catch (errUnread) {
+      console.warn('[weibo] unreadfriendstimeline 失败，尝试 friends_timeline 回退:', errUnread.message)
+      await sleep(300)
+      const fallbackParams = { count: params.count, list_id: params.list_id }
+      if (params.max_id) fallbackParams.max_id = params.max_id
+      else fallbackParams.since_id = params.since_id || '0'
+      return { response: await fetchFriendsTimelineFallback(cookie, fallbackParams), endpoint: 'friends_timeline' }
+    }
+  }
+}
+
 /**
  * 获取微博关注信息流
  *
- * 主方案: 使用 unreadfriendstimeline 接口（1 次调用获取整个关注流）
+ * 主方案: /ajax/feed/friendstimeline（完整关注时间线，不受已读状态影响）
+ * 回退链: friendstimeline → unreadfriendstimeline → statuses/friends_timeline
+ *
+ * 刷新（无 maxId 游标）时自动向下翻页（最多 pages 页），
+ * 并以会话内水位线为回追终点，避免两次刷新之间新微博超过
+ * 固定页数窗口时中间内容永久丢失。
  *
  * 游标格式:
  *   - sinceId: 增量刷新，获取比此 ID 更新的微博
@@ -250,6 +365,7 @@ async function fetchItems(config, cursor) {
   }
 
   const count = Math.min(config.count || 20, 50)
+  const maxPages = Math.min(Math.max(config.pages || 20, 1), 20)
 
   // 解析游标
   let sinceId = null
@@ -264,62 +380,139 @@ async function fetchItems(config, cursor) {
     }
   }
 
-  // 获取 list_id (缓存 1 小时)
-  const now = Date.now()
-  if (!cachedListId || (now - listIdCacheTime) > LIST_ID_CACHE_TTL) {
-    try {
-      const groupsResponse = await fetchAllGroups(cookie)
-      cachedListId = extractAllFollowListId(groupsResponse)
-      listIdCacheTime = now
-      console.log(`[weibo] allGroups ok, list_id=${cachedListId}`)
-    } catch (err) {
-      console.warn('[weibo] Failed to fetch allGroups:', err.message)
+  // 解析 list_id：显式配置的 gid 优先；填 "all" 时自动解析「全部关注」；
+  // 留空默认抓「特别关注」分组（免配置、也省去 allGroups 请求）
+  const configuredListId = String(config.listId || '').trim()
+  let listId = null
+  if (configuredListId && configuredListId !== 'all') {
+    listId = configuredListId
+  } else if (configuredListId === 'all') {
+    // 获取 list_id (缓存 1 小时)
+    const now = Date.now()
+    if (!cachedListId || (now - listIdCacheTime) > LIST_ID_CACHE_TTL) {
+      try {
+        const groupsResponse = await fetchAllGroups(cookie)
+        cachedListId = extractAllFollowListId(groupsResponse)
+        listIdCacheTime = now
+        console.log(`[weibo] allGroups ok, list_id=${cachedListId}`)
+      } catch (err) {
+        console.warn('[weibo] Failed to fetch allGroups:', err.message)
+      }
     }
-  }
-  console.log(`[weibo] fetchItems params: count=${count}, since_id=${sinceId || '0'}, max_id=${maxId || '无'}, list_id=${cachedListId || '无'}`)
-
-  // 构建 API 参数: max_id 优先 (加载更旧的微博)，否则用 since_id (增量刷新)
-  const params = { count, refresh: 4 }
-  if (maxId) {
-    params.max_id = maxId
+    listId = cachedListId
   } else {
-    params.since_id = sinceId || '0'
+    listId = DEFAULT_SPECIAL_FOLLOW_GID
   }
-  if (cachedListId) {
-    params.list_id = cachedListId
-  }
+  const allowedAuthorIds = loadExternalWeiboFollows()
+  const allowedAuthorSet = new Set(allowedAuthorIds)
+  const watermarkKey = `${cookie}|${listId || ''}`
+  console.log(`[weibo] fetchItems params: count=${count}, since_id=${sinceId || '0'}, max_id=${maxId || '无'}, list_id=${listId || '无'}, maxPages=${maxPages}`)
 
   try {
-    let response
-    let usedFallback = false
-    try {
-      response = await fetchFriendsTimeline(cookie, params)
-    } catch (primaryErr) {
-      // unreadfriendstimeline 失败（常见原因: XSRF-TOKEN 失效 / 接口变更），
-      // 回退到旧版 friends_timeline 接口再试一次
-      console.warn('[weibo] unreadfriendstimeline 失败，尝试 friends_timeline 回退:', primaryErr.message)
-      usedFallback = true
-      const fallbackParams = { count }
-      if (maxId) fallbackParams.max_id = maxId
-      else fallbackParams.since_id = sinceId || '0'
-      response = await fetchFriendsTimelineFallback(cookie, fallbackParams)
+    // 刷新（无起始 maxId）时自动向下翻页，补抓超过单页条数的新微博；
+    // loadOlder（带 maxId）保持单页行为，由 UI 逐页触发
+    const totalPages = maxId ? 1 : maxPages
+    // 刷新时启用增量水位线：翻页直到触及上次刷新见过的最新微博，
+    // 避免高密度时间线两次刷新之间的内容落在固定页数窗口之外
+    const watermark = maxId ? null : (newestWatermarkByCookie.get(watermarkKey) || null)
+    let reachedWatermark = false
+    let stoppedEarly = false // 空页/重复页/翻页失败等提前结束，与"页数用尽"区分
+    const seen = new Set()
+    const allStatuses = []
+    let firstResponse = null
+    let pageMaxId = maxId
+
+    for (let page = 1; page <= totalPages; page++) {
+      const params = { count, refresh: 4 }
+      if (pageMaxId) {
+        params.max_id = pageMaxId
+      } else {
+        params.since_id = watermark || sinceId || '0'
+      }
+      if (listId) {
+        params.list_id = listId
+      }
+
+      const pageResult = await fetchTimelinePage(cookie, params).catch((err) => {
+        // 首页失败：整体抛出（保留 Cookie 失效检测与回退链错误语义）；
+        // 后续页失败：保留已抓取的页，提前结束翻页，避免部分成功变整体失败
+        if (page === 1) throw err
+        console.warn(`[weibo] page ${page}/${totalPages} 失败，保留已抓取的 ${allStatuses.length} 条并结束翻页:`, err.message)
+        return null
+      })
+      if (!pageResult) { stoppedEarly = true; break }
+      const { response, endpoint } = pageResult
+      if (!firstResponse) {
+        firstResponse = response
+      }
+      const statuses = extractStatuses(response)
+      const newStatuses = []
+      for (const s of statuses) {
+        const id = statusIdOf(s)
+        if (id && !seen.has(id)) {
+          seen.add(id)
+          newStatuses.push(s)
+        }
+      }
+      const filteredStatuses = newStatuses.filter((status) => {
+        const authorId = statusAuthorId(status)
+        return authorId != null && allowedAuthorSet.has(String(authorId))
+      })
+      allStatuses.push(...filteredStatuses)
+      console.log(`[weibo] page ${page}/${totalPages} (${endpoint}): raw=${statuses.length}, unique=${newStatuses.length}, allowed=${filteredStatuses.length}`)
+
+      const pageOldestId = statuses.length > 0 ? statusIdOf(statuses[statuses.length - 1]) : ''
+      // 到达水位线：本页最旧条目不新于上次刷新的最新条目，中间已无缺口
+      if (watermark && pageOldestId) {
+        try {
+          reachedWatermark = BigInt(pageOldestId) <= BigInt(watermark)
+        } catch {
+          reachedWatermark = false // 非数字 ID 时保守地继续翻页
+        }
+      }
+      // 停止条件: 空页、整页重复、无有效 ID，或已回追到水位线。
+      // 注意不能用 statuses.length < count 判断到底——微博接口可能不按请求的
+      // count 返回（如请求 50 只回 25），短页不等于没有更早的内容。
+      if (statuses.length === 0 || newStatuses.length === 0 || !pageOldestId || reachedWatermark) {
+        if (!reachedWatermark) stoppedEarly = true
+        break
+      }
+      pageMaxId = pageOldestId
+      if (page < totalPages) await sleep(PAGE_DELAY_MS)
     }
 
-    const statuses = extractStatuses(response)
-    console.log(`[weibo] timeline response (${usedFallback ? 'fallback' : 'primary'}): ok=${response?.ok}, statuses=${statuses.length}, msg=${response?.msg || '无'}`)
+    // 页数上限用尽（而非提前停止）仍未触及水位线：中间可能仍有缺口，提示调大翻页上限
+    if (watermark && !reachedWatermark && !stoppedEarly && allStatuses.length > 0) {
+      console.warn(`[weibo] 已翻满 ${totalPages} 页仍未回追到上次刷新位置，中间可能有遗漏；可在源设置中调大「每次刷新翻页数上限」`)
+    }
 
-    if (statuses.length > 0 || response?.ok === 1) {
-      const items = statuses.map(mapStatusToItem)
+    // 水位线前进到本次见过的最新条目（与 Map 当前值比较，并发刷新时不回退）
+    if (!maxId && allStatuses.length > 0) {
+      const runNewestId = statusIdOf(allStatuses[0])
+      if (runNewestId) {
+        const currentWatermark = newestWatermarkByCookie.get(watermarkKey) || null
+        let shouldAdvance = true
+        if (currentWatermark) {
+          try {
+            shouldAdvance = BigInt(runNewestId) > BigInt(currentWatermark)
+          } catch {
+            shouldAdvance = true
+          }
+        }
+        if (shouldAdvance) newestWatermarkByCookie.set(watermarkKey, runNewestId)
+      }
+    }
 
-      // 新游标: 保留最大的 sinceId，更新最小的 maxId
-      const newestId = response?.since_id_str || response?.since_id ||
-        (statuses.length > 0 ? (statuses[0].idstr || String(statuses[0].id)) : null)
-      const oldestId = statuses.length > 0
-        ? (statuses[statuses.length - 1].idstr || String(statuses[statuses.length - 1].id))
-        : maxId
+    if (allStatuses.length > 0 || firstResponse?.ok === 1) {
+      const items = allStatuses.map(mapStatusToItem)
+
+      // 新游标: sinceId 前进到本次最新条目, maxId 取本次最旧条目
+      const newestId = (firstResponse?.since_id_str || firstResponse?.since_id) ||
+        (allStatuses.length > 0 ? statusIdOf(allStatuses[0]) : null)
+      const oldestId = allStatuses.length > 0 ? statusIdOf(allStatuses[allStatuses.length - 1]) : maxId
 
       const nextCursor = JSON.stringify({
-        sinceId: sinceId || newestId || '',
+        sinceId: newestId || sinceId || '',
         maxId: oldestId || ''
       })
 
@@ -327,7 +520,7 @@ async function fetchItems(config, cursor) {
     }
 
     // API 返回成功但无数据：可能是 Cookie 权限不足或接口变化
-    const detail = response ? `ok=${response.ok}, msg=${response.msg || '无'}` : '无响应'
+    const detail = firstResponse ? `ok=${firstResponse.ok}, msg=${firstResponse.msg || '无'}` : '无响应'
     throw new Error(`关注时间线接口返回异常（${detail}）。请检查 Cookie 是否仍然有效，或在浏览器中重新登录微博后自动同步。`)
   } catch (err) {
     console.warn('[weibo] fetchItems failed:', err.message)

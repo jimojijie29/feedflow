@@ -1,0 +1,15 @@
+{
+  "name": "feedflow-plugin-weibo-user",
+  "version": "1.0.0",
+  "description": "按用户抓取微博动态（绕过关注流服务端过滤，确保指定作者的微博不漏）",
+  "main": "plugin.js",
+  "feedflow": {
+    "id": "feedflow-plugin-weibo-user",
+    "name": "微博用户动态",
+    "version": "1.0.0",
+    "description": "按用户抓取微博动态（绕过关注流服务端过滤，确保指定作者的微博不漏）",
+    "author": "FeedFlow",
+    "color": "#E6162D",
+    "icon": "👤"
+  }
+}

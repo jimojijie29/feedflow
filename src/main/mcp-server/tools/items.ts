@@ -18,13 +18,41 @@ import type {
 
 // ---- list_items ----
 
+// 把 UTC ISO 时间换算为中国时区（UTC+8）的带偏移 ISO 字符串，便于 MCP 调用方直接阅读。
+// 仅影响输出给调用方的字段；DB 存储与 nextCursor 分页游标仍使用 UTC 原值。
+// 非法输入原样返回。
+function toChinaTime(iso: string): string {
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return iso
+  const local = new Intl.DateTimeFormat('sv-SE', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).format(date)
+  return `${local.replace(' ', 'T')}+08:00`
+}
+
+// since/until 入参归一化为 UTC ISO：输出的 publishedAt 带 +08:00 偏移，
+// 调用方若直接回传，与 DB 的 UTC 字符串做字典序比较会静默出错，这里统一归一。
+// 无法解析的值原样保留（保持与 DB 字符串比较的旧行为）。
+function normalizeTimeParam(value: string | undefined): string | undefined {
+  if (!value) return value
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toISOString()
+}
+
 export function handleListItems(params: ListItemsParams): ListItemsResult {
   const db = getDb()
   const limit = Math.min(Math.max(Number(params.limit ?? 20), 1), 100)
   const cursor = params.cursor
   const sourceIds = params.sourceIds
-  const since = params.since
-  const until = params.until
+  const since = normalizeTimeParam(params.since)
+  const until = normalizeTimeParam(params.until)
 
   // 构建 WHERE 条件
   const conditions: string[] = []
@@ -89,7 +117,7 @@ export function handleListItems(params: ListItemsParams): ListItemsResult {
     authorName: row.authorName,
     contentText: row.contentText,
     permalink: row.permalink,
-    publishedAt: row.publishedAt,
+    publishedAt: toChinaTime(row.publishedAt),
     mediaUrls: JSON.parse(row.mediaUrls || '[]'),
   }))
 
@@ -107,8 +135,8 @@ export function handleSearchItems(params: SearchItemsParams): ListItemsResult {
   const db = getDb()
   const limit = Math.min(Math.max(Number(params.limit ?? 20), 1), 100)
   const sourceIds = params.sourceIds
-  const since = params.since
-  const until = params.until
+  const since = normalizeTimeParam(params.since)
+  const until = normalizeTimeParam(params.until)
 
   const conditions: string[] = ['content_text LIKE ?']
   const queryParams: unknown[] = [`%${query}%`]
@@ -160,7 +188,7 @@ export function handleSearchItems(params: SearchItemsParams): ListItemsResult {
     authorName: row.authorName,
     contentText: row.contentText,
     permalink: row.permalink,
-    publishedAt: row.publishedAt,
+    publishedAt: toChinaTime(row.publishedAt),
     mediaUrls: JSON.parse(row.mediaUrls || '[]'),
   }))
 
@@ -286,8 +314,8 @@ function toItemDetail(item: Item, sourceName: string): ItemDetail {
     contentHtml: item.contentHtml,
     mediaUrls: JSON.parse(item.mediaUrls || '[]'),
     permalink: item.permalink,
-    publishedAt: item.publishedAt,
-    fetchedAt: item.fetchedAt,
+    publishedAt: toChinaTime(item.publishedAt),
+    fetchedAt: toChinaTime(item.fetchedAt),
     metadata: (() => {
       try {
         return JSON.parse(item.metadata || '{}')

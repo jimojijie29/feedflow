@@ -12,6 +12,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- 新增「微博用户动态」插件：按用户 UID 直接抓取作者主页时间线（`/ajax/statuses/mymblog`）。关注流接口会在服务端过滤个别微博（疑似限流/风控——作者主页可见但不进关注时间线），该插件作为补充确保指定作者的内容不漏，凭据与微博关注流复用
+
+### Changed
+- 微博关注流支持按关注分组抓取：新增「关注分组 gid」配置，默认改为只抓「特别关注」分组（gid 可从 weibo.com/mygroups 分组页链接复制），填 `all` 恢复抓取全部关注
+
+### Fixed
+- 微博关注流漏抓已在浏览器/手机端读过的微博：主接口从 `unreadfriendstimeline`（未读接口，受服务端已读位置影响）切换为 `friendstimeline`（完整关注时间线，与已读状态无关），保留 unreadfriendstimeline 与旧版 friends_timeline 作为回退链
+- 微博关注流在两次刷新之间新微博超过抓取窗口时中间内容永久丢失：刷新时自动向下翻页（「每次刷新翻页数上限」配置，默认 20、上限 20，页间 500ms 延迟），并维护会话内增量水位线——每次刷新回追到上次见过的最新微博为止，翻页深度随实际新增量自适应
+- 微博关注流游标 sinceId 写入后永不前进的问题
+- MCP 接口（list_items / search_items / get_item）返回的 `publishedAt`、`fetchedAt` 从 UTC 换算为中国时区（UTC+8，带偏移 ISO 格式），分页游标 nextCursor 保持 UTC 原值不受影响
+
 ## [0.3.0] - 2026-09-16
 
 ### Added

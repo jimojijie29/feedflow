@@ -118,6 +118,20 @@ class ApiError extends Error {
 // ============================================================
 
 /**
+ * 构建关注时间线接口的公共查询参数
+ * （friendstimeline / unreadfriendstimeline 参数一致，抽公共函数防止漂移）
+ */
+function buildTimelineQuery(params) {
+  const query = new URLSearchParams()
+  if (params.list_id) query.set('list_id', params.list_id)
+  if (params.count) query.set('count', params.count)
+  if (params.since_id) query.set('since_id', params.since_id)
+  if (params.max_id) query.set('max_id', params.max_id)
+  if (params.refresh !== undefined) query.set('refresh', params.refresh)
+  return query.toString()
+}
+
+/**
  * 获取关注时间线（首页关注信息流 - 未读微博）
  * GET https://weibo.com/ajax/feed/unreadfriendstimeline
  *
@@ -125,23 +139,34 @@ class ApiError extends Error {
  * 与浏览器实际调用一致，使用 list_id（"全部关注"分组 ID）。
  *
  * 注意: 此接口要求请求头携带有效的 x-xsrf-token，否则返回 ok=-100。
+ *      此接口为「未读」语义，受服务端已读位置影响，仅作回退使用。
+ *
+ * @param {string} cookie    - weibo.com Cookie
+ * @param {object} params    - 见 buildTimelineQuery
+ */
+function fetchFriendsTimeline(cookie, params) {
+  return httpsGet(`/ajax/feed/unreadfriendstimeline?${buildTimelineQuery(params)}`, cookie)
+}
+
+/**
+ * 获取关注时间线（完整列表，与已读状态无关）
+ * GET https://weibo.com/ajax/feed/friendstimeline
+ *
+ * 微博网页版「关注」Tab 加载主信息流使用的接口。
+ * 与 unreadfriendstimeline（未读接口，受服务端已读位置影响）不同，
+ * 此接口返回完整关注时间线——用户在浏览器/手机端已读过的微博也会返回，
+ * 因此作为主接口可避免「网页上能看到、App 抓不到」的漏抓问题。
  *
  * @param {string} cookie    - weibo.com Cookie
  * @param {object} params
  * @param {number} [params.count]    - 单页条数 (默认 15)
  * @param {string} [params.since_id] - 返回 ID 大于此值的微博 (增量)
  * @param {string} [params.max_id]   - 返回 ID 小于此值的微博 (向下翻页)
- * @param {string} [params.list_id] - 分组 ID (默认 "全部关注")
- * @param {number} [params.refresh] - 刷新次数 (默认 4)
+ * @param {string} [params.list_id]  - 分组 ID (默认 "全部关注")
+ * @param {number} [params.refresh]  - 刷新次数 (默认 4)
  */
-function fetchFriendsTimeline(cookie, params) {
-  const query = new URLSearchParams()
-  if (params.list_id) query.set('list_id', params.list_id)
-  if (params.count) query.set('count', params.count)
-  if (params.since_id) query.set('since_id', params.since_id)
-  if (params.max_id) query.set('max_id', params.max_id)
-  if (params.refresh !== undefined) query.set('refresh', params.refresh)
-  return httpsGet(`/ajax/feed/unreadfriendstimeline?${query.toString()}`, cookie)
+function fetchFriendsTimelineFull(cookie, params) {
+  return httpsGet(`/ajax/feed/friendstimeline?${buildTimelineQuery(params)}`, cookie)
 }
 
 /**
@@ -160,6 +185,7 @@ function fetchFriendsTimeline(cookie, params) {
  */
 function fetchFriendsTimelineFallback(cookie, params) {
   const query = new URLSearchParams()
+  if (params.list_id) query.set('list_id', params.list_id)
   if (params.count) query.set('count', params.count)
   if (params.since_id) query.set('since_id', params.since_id)
   if (params.max_id) query.set('max_id', params.max_id)
@@ -192,6 +218,7 @@ function extractAllFollowListId(response) {
   return null
 }
 
+/** Extract member UIDs from a selected feed group response. */
 /**
  * 获取用户发布的微博
  * GET https://weibo.com/ajax/statuses/mymblog
@@ -323,6 +350,7 @@ module.exports = {
   ApiError,
   httpsGet,
   fetchFriendsTimeline,
+  fetchFriendsTimelineFull,
   fetchFriendsTimelineFallback,
   fetchAllGroups,
   extractAllFollowListId,
