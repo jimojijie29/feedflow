@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell, session, ipcMain } from 'electron'
+import { app, BrowserWindow, shell, session, ipcMain, Menu, Tray, nativeImage } from 'electron'
 import { join } from 'path'
 import { is } from '@electron-toolkit/utils'
 import { initializeDatabase } from './database/schema'
@@ -16,8 +16,49 @@ import {
   setWeiboCookies,
 } from './media-cookies'
 
+let mainWindow: BrowserWindow | null = null
+let tray: Tray | null = null
+let isQuitting = false
+
+function showMainWindow(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  mainWindow.setSkipTaskbar(false)
+  mainWindow.show()
+  mainWindow.focus()
+}
+
+function createTray(): void {
+  if (tray) return
+  const iconPath = app.isPackaged
+    ? join(process.resourcesPath, 'tray-icon.svg')
+    : join(app.getAppPath(), 'resources', 'tray-icon.svg')
+  const icon = nativeImage.createFromPath(iconPath)
+  tray = new Tray(icon)
+  tray.setToolTip('FeedFlow')
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: '显示 FeedFlow', click: showMainWindow },
+    { type: 'separator' },
+    {
+      label: '退出 FeedFlow',
+      click: () => {
+        isQuitting = true
+        tray?.destroy()
+        tray = null
+        app.quit()
+      }
+    }
+  ]))
+  tray.on('click', showMainWindow)
+  tray.on('double-click', showMainWindow)
+}
+
 function createWindow(): void {
-  const mainWindow = new BrowserWindow({
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    showMainWindow()
+    return
+  }
+
+  mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
     minWidth: 800,
@@ -33,7 +74,18 @@ function createWindow(): void {
   })
 
   mainWindow.on('ready-to-show', () => {
-    mainWindow.show()
+    showMainWindow()
+  })
+
+  mainWindow.on('close', (event) => {
+    if (isQuitting) return
+    event.preventDefault()
+    mainWindow?.hide()
+    mainWindow?.setSkipTaskbar(true)
+  })
+
+  mainWindow.on('closed', () => {
+    mainWindow = null
   })
 
   // 统一链接行为：所有外部链接都在系统浏览器中打开，禁止在应用内导航
@@ -168,23 +220,27 @@ app.whenReady().then(async () => {
   })
 
   createWindow()
+  createTray()
 
   // 初始化自动更新（仅生产环境生效）
   initAutoUpdater()
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      showMainWindow()
+    } else {
       createWindow()
     }
   })
 })
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit()
-  }
+  // Keep the main process alive while the window is hidden in the tray.
 })
 
 app.on('before-quit', () => {
+  isQuitting = true
+  tray?.destroy()
+  tray = null
   closeDb()
 })
