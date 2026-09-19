@@ -210,9 +210,9 @@ function fetchAllGroups(cookie) {
 function extractAllFollowListId(response) {
   const groups = response?.groups || []
   for (const g of groups) {
-    if (g.group_type === 0 && g.group) {
-      const allFollow = g.group.find(item => item.title === '全部关注' || (item.gid && item.gid.startsWith('10001')))
-      if (allFollow) return allFollow.gid || allFollow.uid
+    if (g.group_type === 0 && Array.isArray(g.group)) {
+      const allFollow = g.group.find(item => item.title === '全部关注' || String(item.gid || '').startsWith('10001'))
+      if (allFollow?.gid) return String(allFollow.gid)
     }
   }
   return null

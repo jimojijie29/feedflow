@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useStore } from '../../store'
 import { Button } from '../common/Button'
 import type { ConfigField, SourceConfig, Credential } from '@shared/types'
@@ -36,9 +36,18 @@ export function SourceConfigForm({ schema, onSubmit, submitting, pluginId, onDyn
   const [credVerifySuccess, setCredVerifySuccess] = useState<{ uid?: string; screenName?: string } | null>(null)
   const [credSaving, setCredSaving] = useState(false)
 
-  // Dynamic group options for weibo-group-chat plugin
+  // Dynamic options shared by Weibo timelines and group chats.
   const [groupOptions, setGroupOptions] = useState<{ label: string; value: string }[]>([])
   const [groupLoading, setGroupLoading] = useState(false)
+  const [groupError, setGroupError] = useState<string | null>(null)
+  const [groupReload, setGroupReload] = useState(0)
+  const [manualGroup, setManualGroup] = useState(false)
+  const [submitError, setSubmitError] = useState<string | null>(null)
+  const isWeiboTimeline = pluginId === 'feedflow-plugin-weibo'
+  const groupField = isWeiboTimeline ? 'listId' : 'group_id'
+  const supportsGroups = isWeiboTimeline || pluginId === 'feedflow-plugin-weibo-group-chat'
+  const optionsCallback = useRef(onDynamicOptionsChange)
+  optionsCallback.current = onDynamicOptionsChange
   const [extStatus, setExtStatus] = useState<ExtensionStatus>({
     status: 'unknown',
     lastSeen: null,
@@ -57,27 +66,36 @@ export function SourceConfigForm({ schema, onSubmit, submitting, pluginId, onDyn
       .catch(() => { /* ignore */ })
   }, [])
 
-  // Load group options when a credential is selected for weibo-group-chat
+  // Discard responses from a previous credential or reload request.
   useEffect(() => {
     const credId = values['cookie'] as string | undefined
-    if (pluginId === 'feedflow-plugin-weibo-group-chat' && credId) {
+    let active = true
+    setGroupOptions([])
+    setGroupError(null)
+    if (supportsGroups && pluginId && credId) {
       setGroupLoading(true)
       window.api.listGroups(pluginId, credId)
         .then((groups) => {
+          if (!active) return
           const opts = groups as { label: string; value: string }[]
           setGroupOptions(opts)
-          onDynamicOptionsChange?.('group_id', opts)
         })
         .catch((err) => {
+          if (!active) return
           console.error('Failed to load groups:', err)
           setGroupOptions([])
-          onDynamicOptionsChange?.('group_id', [])
+          setGroupError('分组加载失败，请检查凭据并重试。')
         })
-        .finally(() => setGroupLoading(false))
+        .finally(() => { if (active) setGroupLoading(false) })
     } else {
-      setGroupOptions([])
+      setGroupLoading(false)
     }
-  }, [pluginId, values['cookie']])
+    return () => { active = false }
+  }, [pluginId, values['cookie'], groupReload])
+
+  useEffect(() => {
+    optionsCallback.current?.(groupField, isWeiboTimeline && manualGroup ? [] : groupOptions)
+  }, [groupOptions, groupField, isWeiboTimeline, manualGroup])
 
   // 插件支持 Cookie 验证（配置中包含 cookie 字段，且不是 credential 类型）
   const supportsCookieVerify = !!pluginId && schema.some((f) => f.key === 'cookie' && f.type !== 'credential')
@@ -89,7 +107,14 @@ export function SourceConfigForm({ schema, onSubmit, submitting, pluginId, onDyn
   const pluginCredentials = credentials.filter((c) => c.provider === currentProvider)
 
   const handleChange = (key: string, value: unknown) => {
-    setValues((prev) => ({ ...prev, [key]: value }))
+    setSubmitError(null)
+    if (key === 'cookie' && supportsGroups) {
+      setGroupOptions([])
+      onDynamicOptionsChange?.(groupField, [])
+      setValues((prev) => ({ ...prev, [key]: value, [groupField]: '' }))
+    } else {
+      setValues((prev) => ({ ...prev, [key]: value }))
+    }
   }
 
   const handleVerifyCookie = async () => {
@@ -190,14 +215,40 @@ export function SourceConfigForm({ schema, onSubmit, submitting, pluginId, onDyn
     return screenName ? `${cred.name}（@${screenName}）` : cred.name
   }
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    onSubmit(values)
+    setSubmitError(null)
+    const config = { ...values }
+    if (isWeiboTimeline) {
+      const listId = String(config.listId || '').trim()
+      if (!config.cookie || !/^(all|\d+)$/.test(listId)) {
+        setSubmitError('请选择微博凭据和分组，或填写有效的数字 gid。')
+        return
+      }
+      config.listId = listId
+      if (!['none', 'uids', 'legacyExternal'].includes(String(config.authorFilterMode))) {
+        setSubmitError('请选择作者过滤方式。')
+        return
+      }
+      if (config.authorFilterMode === 'uids') {
+        const ids = [...new Set(String(config.authorUids || '').trim().split(/[\s,，]+/).filter(Boolean))]
+        if (!ids.length || ids.some(id => !/^\d+$/.test(id))) {
+          setSubmitError('请填写有效的数字 UID 白名单，以逗号、空格或换行分隔。')
+          return
+        }
+        config.authorUids = ids.join('\n')
+      }
+    }
+    try {
+      await onSubmit(config)
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : '添加信息源失败，请重试。')
+    }
   }
 
   return (
     <form className={styles.form} onSubmit={handleSubmit}>
-      {schema.map((field) => (
+      {schema.filter(field => !(isWeiboTimeline && field.key === 'authorUids' && values.authorFilterMode !== 'uids')).map((field) => (
         <div key={field.key} className={styles.field}>
           <label className={styles.label}>
             {field.label}
@@ -322,7 +373,7 @@ export function SourceConfigForm({ schema, onSubmit, submitting, pluginId, onDyn
             />
           )}
 
-          {field.type === 'select' && (
+          {field.type === 'select' && !(isWeiboTimeline && field.key === 'listId') && (
             <div>
               <select
                 className={styles.input}
@@ -348,6 +399,30 @@ export function SourceConfigForm({ schema, onSubmit, submitting, pluginId, onDyn
                   请先选择上方的微博凭据，群聊列表将自动加载。
                 </span>
               )}
+            </div>
+          )}
+
+          {isWeiboTimeline && field.key === 'listId' && (
+            <div>
+              {manualGroup ? (
+                <input className={styles.input} aria-label="关注分组 gid" placeholder="数字 gid，或 all（全部关注）"
+                  value={String(values.listId || '')} onChange={e => handleChange('listId', e.target.value)} />
+              ) : (
+                <select className={styles.input} aria-label="关注分组" value={String(values.listId || '')}
+                  disabled={groupLoading || !values.cookie} onChange={e => handleChange('listId', e.target.value)}>
+                  <option value="">{groupLoading ? '加载分组中...' : '请选择分组'}</option>
+                  {groupOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+                </select>
+              )}
+              <Button type="button" variant="ghost" size="sm" disabled={!values.cookie || groupLoading}
+                onClick={() => { handleChange('listId', ''); setGroupReload(n => n + 1) }}>重新加载分组</Button>
+              <Button type="button" variant="ghost" size="sm" onClick={() => {
+                setManualGroup(value => !value)
+                handleChange('listId', '')
+                onDynamicOptionsChange?.('listId', manualGroup ? groupOptions : [])
+              }}>{manualGroup ? '从列表选择' : '手填 gid'}</Button>
+              {groupError && <span role="alert" className={styles.authError}>{groupError}</span>}
+              {!values.cookie && <span className={styles.help}>请先选择微博凭据。</span>}
             </div>
           )}
 
@@ -394,6 +469,7 @@ export function SourceConfigForm({ schema, onSubmit, submitting, pluginId, onDyn
         </div>
       ))}
 
+      {submitError && <span role="alert" className={styles.authError}>{submitError}</span>}
       <div className={styles.actions}>
         <Button type="submit" disabled={submitting}>
           {submitting ? '添加中...' : '添加信息源'}

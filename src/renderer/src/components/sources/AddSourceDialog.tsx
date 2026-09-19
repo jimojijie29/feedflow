@@ -29,14 +29,17 @@ function buildSourceName(
 
   for (const field of schema) {
     if (field.type !== 'select') continue
+    if (field.key === 'authorFilterMode') continue
     const value = config[field.key]
     if (value === undefined || value === null || value === '') continue
 
     // 优先使用静态 options，其次使用运行时动态加载的 options（如群聊列表）
-    const options = field.options ?? dynamicOptions[field.key] ?? []
+    const options = field.options?.length ? field.options : (dynamicOptions[field.key] ?? [])
     const matched = options.find((o) => String(o.value) === String(value))
     if (matched) {
       parts.push(matched.label)
+    } else if (field.key === 'listId') {
+      parts.push(String(value))
     }
   }
 
@@ -49,7 +52,7 @@ export function AddSourceDialog({ open, onClose }: AddSourceDialogProps): JSX.El
   const [selectedPlugin, setSelectedPlugin] = useState<PluginMeta | null>(null)
   const [configSchema, setConfigSchema] = useState<ConfigField[]>([])
   const [submitting, setSubmitting] = useState(false)
-  // 运行时动态加载的选项（目前用于微博群聊的 group_id 列表），用于生成更准确的名称
+  // 运行时动态加载的关注分组 / 群聊选项，用于生成信息源名称。
   const [dynamicOptions, setDynamicOptions] = useState<Record<string, { label: string; value: string }[]>>({})
 
   useEffect(() => {
@@ -72,13 +75,16 @@ export function AddSourceDialog({ open, onClose }: AddSourceDialogProps): JSX.El
     if (!selectedPlugin) return
     setSubmitting(true)
     const name = buildSourceName(selectedPlugin.name, configSchema, config, dynamicOptions)
-    await addSource({
-      pluginId: selectedPlugin.id,
-      name,
-      config
-    })
-    setSubmitting(false)
-    onClose()
+    try {
+      await addSource({
+        pluginId: selectedPlugin.id,
+        name,
+        config
+      })
+      onClose()
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   return (

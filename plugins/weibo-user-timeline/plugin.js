@@ -51,14 +51,18 @@ function httpsGet(path, cookie, host = WEIBO_HOST) {
       let body = ''
       res.on('data', (chunk) => (body += chunk))
       res.on('end', () => {
-        if (res.statusCode === 403) {
+        if (res.statusCode === 401 || res.statusCode === 403) {
           reject(new Error('Cookie 已过期或无效，请重新登录 weibo.com 获取'))
+          return
+        }
+        if (res.statusCode >= 400) {
+          reject(new Error(`微博接口请求失败（HTTP ${res.statusCode}），请稍后重试`))
           return
         }
         try {
           const json = JSON.parse(body)
           if (json.ok === -100) {
-            reject(new Error(json.msg || 'Cookie 已过期或需要重新登录，请重新登录 weibo.com'))
+            reject(new Error(`Cookie 已过期或需要重新登录，请重新登录 weibo.com${json.msg ? `（${json.msg}）` : ''}`))
             return
           }
           if (json.ok !== undefined && json.ok !== 1 && json.ok !== 0) {
@@ -108,8 +112,11 @@ function fetchLongTextById(cookie, id) {
 
 /** mymblog 响应: { ok, data: { list: [...] } } */
 function extractStatuses(response) {
-  const list = response?.data?.list || response?.statuses || response?.data?.statuses
-  return Array.isArray(list) ? list : []
+  // An empty array is a valid result; a missing/malformed list is not.
+  for (const list of [response?.data?.list, response?.statuses, response?.data?.statuses]) {
+    if (Array.isArray(list)) return list
+  }
+  return null
 }
 
 // ============================================================
@@ -327,8 +334,19 @@ async function fetchItems(config, cursor) {
     const params = { count }
     if (maxId) params.max_id = maxId
     const response = await fetchUserBlogs(cookie, uid, params)
+    if (response?.ok !== 1) {
+      throw new Error(`用户微博接口返回异常（ok=${response?.ok}, msg=${response?.msg || '无'}）。请检查用户主页是否可访问，或稍后重试。`)
+    }
+    const rawStatuses = extractStatuses(response)
+    if (rawStatuses === null) {
+      throw new Error('用户微博接口返回格式异常：未找到微博列表。请稍后重试；如果持续出现，可能需要适配接口变化。')
+    }
+    if (rawStatuses.length === 0) {
+      // No visible posts (including an exhausted history page) is not an auth failure.
+      return { items: [], nextCursor: null }
+    }
     // 过滤掉畸形条目，避免单条坏数据导致整页失败
-    const statuses = extractStatuses(response).filter((s) => s && typeof s === 'object')
+    const statuses = rawStatuses.filter((s) => s && typeof s === 'object' && !Array.isArray(s))
     console.log(`[weibo-user] ok=${response?.ok}, statuses=${statuses.length}`)
 
     const items = statuses
@@ -343,19 +361,13 @@ async function fetchItems(config, cursor) {
       return { items, nextCursor }
     }
 
-    if (maxId) {
-      // 向下翻页到没有更多：正常结束，返回空
-      return { items: [], nextCursor: cursor || '' }
-    }
-
-    const detail = `ok=${response?.ok}, msg=${response?.msg || '无'}`
-    throw new Error(`用户微博接口返回异常（${detail}）。请检查 Cookie 是否有效、UID 是否正确。`)
+    throw new Error('用户微博接口返回格式异常：列表中没有有效的微博条目。请稍后重试。')
   } catch (err) {
     console.warn('[weibo-user] fetchItems failed:', err.message)
-    if (err.message.includes('用户微博接口返回异常')) {
+    if (err.message.includes('用户微博接口返回')) {
       throw err
     }
-    throw new Error(`用户微博接口暂时不可用（${err.message}）。请稍后重试，或检查 Cookie 是否仍然有效。`)
+    throw new Error(`用户微博接口暂时不可用（${err.message}）。`)
   }
 }
 

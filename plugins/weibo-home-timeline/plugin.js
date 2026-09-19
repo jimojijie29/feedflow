@@ -86,9 +86,22 @@ const configSchema = [
   },
   {
     key: 'listId',
-    label: '关注分组 gid',
-    type: 'text',
-    helpText: '留空默认抓取「特别关注」分组；填 all 抓取全部关注；也可填其它分组的 gid（在 weibo.com/mygroups 页面点进分组，地址栏 gid= 后面的数字）'
+    label: '关注分组',
+    type: 'select',
+    required: true,
+    helpText: '选择微博分组，或手填分组页面地址中 gid= 后面的数字。'
+  },
+  {
+    key: 'authorFilterMode', label: '作者过滤', type: 'select', default: 'none',
+    options: [
+      { label: '整个分组', value: 'none' },
+      { label: '独立 UID 白名单', value: 'uids' },
+      { label: '原有外部清单', value: 'legacyExternal' }
+    ]
+  },
+  {
+    key: 'authorUids', label: '作者 UID 白名单', type: 'text-area',
+    helpText: '仅在独立 UID 白名单模式下生效，以逗号、空格或换行分隔。'
   }
 ]
 
@@ -96,9 +109,45 @@ const configSchema = [
 // 缓存（避免重复 API 调用）
 // ============================================================
 
-let cachedListId = null
-let listIdCacheTime = 0
+const groupCache = new Map()
 const LIST_ID_CACHE_TTL = 60 * 60 * 1000 // list_id 缓存 1 小时
+
+async function listGroups(cookie) {
+  if (!cookie) throw new Error('请先选择微博凭据')
+  const response = await fetchAllGroups(cookie)
+  if (response?.ok === 0 || !Array.isArray(response?.groups)) {
+    throw new Error('微博分组读取失败，请检查凭据后重试')
+  }
+  const options = new Map()
+  for (const section of response.groups) {
+    for (const group of Array.isArray(section.group) ? section.group : []) {
+      const value = String(group.gid ?? '').trim()
+      if (/^\d+$/.test(value) && typeof group.title === 'string' && group.title.trim()) {
+        options.set(value, { label: group.title.trim(), value })
+      }
+    }
+  }
+  if (!options.size) throw new Error('微博未返回可用分组，请重试或手填 gid')
+  const allId = extractAllFollowListId(response)
+  if (allId && options.has(String(allId))) {
+    options.delete(String(allId))
+    options.set('all', { label: '全部关注', value: 'all' })
+  }
+  groupCache.set(cookie, { allId, time: Date.now() })
+  return [...options.values()]
+}
+
+function resolveAuthorFilter(config) {
+  const mode = config.authorFilterMode ?? 'legacyExternal'
+  if (mode === 'none') return { mode, ids: null }
+  if (mode === 'legacyExternal') return { mode, ids: loadExternalWeiboFollows() }
+  if (mode !== 'uids') throw new Error('未知的作者过滤方式')
+  const ids = [...new Set(String(config.authorUids || '').trim().split(/[\s,，]+/).filter(Boolean))]
+  if (!ids.length || ids.some(id => !/^\d+$/.test(id))) {
+    throw new Error('请填写有效的数字 UID 白名单，以逗号、空格或换行分隔')
+  }
+  return { mode, ids: ids.sort() }
+}
 
 // 默认抓取「特别关注」分组的 gid（对应 weibo.com/mygroups?gid=3649296794726060）
 const DEFAULT_SPECIAL_FOLLOW_GID = '3649296794726060'
@@ -139,7 +188,7 @@ function statusAuthorId(status) {
   return user.idstr || user.id || status?.user_id || status?.uid || null
 }
 
-// 会话内增量水位线：cookie + list_id → 上次刷新见过的最新微博 ID。
+// 会话内增量水位线：cookie + list_id + 作者过滤配置 → 上次见过的最新微博 ID。
 // 刷新时向下翻页直到触及水位线，使翻页深度自动适配实际新增量
 // （高密度关注流下，固定页数窗口外、两次刷新之间的内容会永久丢失）。
 // key 含 list_id：切换分组后旧分组的最高 ID 普遍高于新分组，
@@ -385,27 +434,20 @@ async function fetchItems(config, cursor) {
   const configuredListId = String(config.listId || '').trim()
   let listId = null
   if (configuredListId && configuredListId !== 'all') {
+    if (!/^\d+$/.test(configuredListId)) throw new Error('微博分组 gid 必须是数字')
     listId = configuredListId
   } else if (configuredListId === 'all') {
     // 获取 list_id (缓存 1 小时)
-    const now = Date.now()
-    if (!cachedListId || (now - listIdCacheTime) > LIST_ID_CACHE_TTL) {
-      try {
-        const groupsResponse = await fetchAllGroups(cookie)
-        cachedListId = extractAllFollowListId(groupsResponse)
-        listIdCacheTime = now
-        console.log(`[weibo] allGroups ok, list_id=${cachedListId}`)
-      } catch (err) {
-        console.warn('[weibo] Failed to fetch allGroups:', err.message)
-      }
-    }
-    listId = cachedListId
+    const cached = groupCache.get(cookie)
+    if (!cached || Date.now() - cached.time > LIST_ID_CACHE_TTL) await listGroups(cookie)
+    listId = groupCache.get(cookie)?.allId
+    if (!listId) throw new Error('无法解析全部关注分组，请重新加载分组或手填 gid')
   } else {
     listId = DEFAULT_SPECIAL_FOLLOW_GID
   }
-  const allowedAuthorIds = loadExternalWeiboFollows()
-  const allowedAuthorSet = new Set(allowedAuthorIds)
-  const watermarkKey = `${cookie}|${listId || ''}`
+  const filter = resolveAuthorFilter(config)
+  const allowedAuthorSet = filter.ids ? new Set(filter.ids) : null
+  const watermarkKey = JSON.stringify([cookie, listId, filter.mode, filter.ids?.slice().sort()])
   console.log(`[weibo] fetchItems params: count=${count}, since_id=${sinceId || '0'}, max_id=${maxId || '无'}, list_id=${listId || '无'}, maxPages=${maxPages}`)
 
   try {
@@ -419,6 +461,8 @@ async function fetchItems(config, cursor) {
     let stoppedEarly = false // 空页/重复页/翻页失败等提前结束，与"页数用尽"区分
     const seen = new Set()
     const allStatuses = []
+    const rawStatuses = []
+    let exhausted = false
     let firstResponse = null
     let pageMaxId = maxId
 
@@ -455,10 +499,12 @@ async function fetchItems(config, cursor) {
         }
       }
       const filteredStatuses = newStatuses.filter((status) => {
+        if (!allowedAuthorSet) return true
         const authorId = statusAuthorId(status)
         return authorId != null && allowedAuthorSet.has(String(authorId))
       })
       allStatuses.push(...filteredStatuses)
+      rawStatuses.push(...newStatuses)
       console.log(`[weibo] page ${page}/${totalPages} (${endpoint}): raw=${statuses.length}, unique=${newStatuses.length}, allowed=${filteredStatuses.length}`)
 
       const pageOldestId = statuses.length > 0 ? statusIdOf(statuses[statuses.length - 1]) : ''
@@ -474,6 +520,7 @@ async function fetchItems(config, cursor) {
       // 注意不能用 statuses.length < count 判断到底——微博接口可能不按请求的
       // count 返回（如请求 50 只回 25），短页不等于没有更早的内容。
       if (statuses.length === 0 || newStatuses.length === 0 || !pageOldestId || reachedWatermark) {
+        exhausted = statuses.length === 0 || newStatuses.length === 0 || !pageOldestId
         if (!reachedWatermark) stoppedEarly = true
         break
       }
@@ -487,8 +534,8 @@ async function fetchItems(config, cursor) {
     }
 
     // 水位线前进到本次见过的最新条目（与 Map 当前值比较，并发刷新时不回退）
-    if (!maxId && allStatuses.length > 0) {
-      const runNewestId = statusIdOf(allStatuses[0])
+    if (!maxId && rawStatuses.length > 0) {
+      const runNewestId = statusIdOf(rawStatuses[0])
       if (runNewestId) {
         const currentWatermark = newestWatermarkByCookie.get(watermarkKey) || null
         let shouldAdvance = true
@@ -508,15 +555,15 @@ async function fetchItems(config, cursor) {
 
       // 新游标: sinceId 前进到本次最新条目, maxId 取本次最旧条目
       const newestId = (firstResponse?.since_id_str || firstResponse?.since_id) ||
-        (allStatuses.length > 0 ? statusIdOf(allStatuses[0]) : null)
-      const oldestId = allStatuses.length > 0 ? statusIdOf(allStatuses[allStatuses.length - 1]) : maxId
+        (rawStatuses.length > 0 ? statusIdOf(rawStatuses[0]) : null)
+      const oldestId = rawStatuses.length > 0 ? statusIdOf(rawStatuses[rawStatuses.length - 1]) : maxId
 
       const nextCursor = JSON.stringify({
         sinceId: newestId || sinceId || '',
         maxId: oldestId || ''
       })
 
-      return { items, nextCursor }
+      return { items, nextCursor: exhausted ? null : nextCursor }
     }
 
     // API 返回成功但无数据：可能是 Cookie 权限不足或接口变化
@@ -629,5 +676,6 @@ const weiboPlugin = {
 
 module.exports = {
   default: weiboPlugin,
-  verifyCookie
+  verifyCookie,
+  listGroups
 }
